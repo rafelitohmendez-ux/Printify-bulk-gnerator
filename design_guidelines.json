@@ -1,0 +1,109 @@
+{
+  "theme": "DARK",
+  "archetype": "Industrial Brutalism (Modified Swiss High-Contrast & Luxury)",
+  "typography": {
+    "fonts": {
+      "heading": "Anton",
+      "body": "IBM Plex Mono",
+      "special": "IBM Plex Mono"
+    },
+    "hierarchy": {
+      "h1": "text-5xl sm:text-6xl tracking-tighter uppercase font-heading",
+      "h2": "text-3xl sm:text-4xl tracking-tight uppercase font-heading",
+      "h3": "text-xl sm:text-2xl tracking-tight uppercase font-heading",
+      "body": "text-sm sm:text-base tracking-tight font-body leading-relaxed",
+      "terminal_data": "text-xs tracking-widest font-body uppercase",
+      "description": "text-sm font-body leading-relaxed border-l-2 border-zinc-700 pl-4"
+    },
+    "installation": "Ensure Anton and IBM Plex Mono are imported from Google Fonts."
+  },
+  "colors": {
+    "background_app": "#09090b",
+    "background_mockup": "#000000",
+    "surface": "#18181b",
+    "surface_hover": "#27272a",
+    "border": "#3f3f46",
+    "text_primary": "#f4f4f5",
+    "text_muted": "#a1a1aa",
+    "text_inverted": "#000000",
+    "approve": "#ffffff",
+    "approve_hover": "#e4e4e7",
+    "deny": "#8b0000",
+    "deny_hover": "#660000",
+    "accent_yellow": "#eab308"
+  },
+  "layout": {
+    "grid_system": "grid-cols-1 md:grid-cols-12 gap-0 border-collapse",
+    "spacing_scale": "Tailwind default scale, utilizing generous padding (p-6, p-8) within tight grids to create breathing room over pure black.",
+    "dashboard_structure": {
+      "left_panel": "col-span-1 md:col-span-8 flex flex-col border-r border-zinc-800 min-h-[60vh] bg-black relative",
+      "right_panel": "col-span-1 md:col-span-4 flex flex-col bg-zinc-950 border-zinc-800",
+      "footer_actions": "col-span-full grid grid-cols-2 border-t border-zinc-800"
+    }
+  },
+  "components": {
+    "buttons": {
+      "primary_action": "w-full h-24 text-3xl font-heading uppercase tracking-widest transition-colors duration-100 flex items-center justify-center gap-4 rounded-none border-none",
+      "approve_btn": "bg-white text-black hover:bg-zinc-200",
+      "deny_btn": "bg-[#8b0000] text-white hover:bg-[#660000]"
+    },
+    "tags": {
+      "container": "flex flex-wrap gap-2",
+      "chip": "px-3 py-1 bg-zinc-900 border border-zinc-700 text-xs text-zinc-300 font-body uppercase rounded-none hover:bg-zinc-800 hover:text-white transition-colors"
+    },
+    "cards": {
+      "base": "bg-zinc-950 border border-zinc-800 rounded-none p-6 shadow-none",
+      "header": "text-xs font-body tracking-[0.2em] text-zinc-500 mb-4 border-b border-zinc-800 pb-2"
+    },
+    "mockup_viewer": {
+      "container": "relative w-full h-full flex items-center justify-center bg-black overflow-hidden",
+      "placeholder_front": "absolute top-1/4 left-1/3 w-16 h-16 border border-dashed border-zinc-600 flex items-center justify-center text-zinc-600 text-[10px] font-body",
+      "placeholder_back": "absolute inset-16 border border-dashed border-zinc-600 flex items-center justify-center text-zinc-600 text-sm font-body"
+    },
+    "counter": {
+      "wrapper": "flex gap-6 items-center px-6 py-4 border-b border-zinc-800 bg-zinc-950",
+      "item": "flex flex-col",
+      "label": "text-[10px] text-zinc-500 font-body uppercase tracking-widest",
+      "value": "text-lg text-zinc-100 font-heading"
+    }
+  },
+  "motion": {
+    "philosophy": "Brutalist and mechanical. Snappy transitions with hard cuts. No soft easings.",
+    "hover": "transition-colors duration-75 linear"
+  },
+  "icons": {
+    "library": "@phosphor-icons/react",
+    "style": "weight='fill' or weight='bold' for stark industrial look"
+  },
+  "media": {
+    "textures": {
+      "dark_grunge": "https://images.pexels.com/photos/6485435/pexels-photo-6485435.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "rust_grunge": "https://images.pexels.com/photos/5987752/pexels-photo-5987752.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "industrial_press": "https://images.pexels.com/photos/1440504/pexels-photo-1440504.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940"
+    },
+    "usage": "Use 'dark_grunge' as a very low-opacity fixed background overlay (mix-blend-overlay or opacity-5) over the right panel or loading states to give the app a physical zine/print-shop grain."
+  },
+  "testing": {
+    "attributes": [
+      "data-testid='approve-button'",
+      "data-testid='deny-button'",
+      "data-testid='mockup-viewer-front'",
+      "data-testid='mockup-viewer-back'",
+      "data-testid='seo-title'",
+      "data-testid='seo-description'",
+      "data-testid='seo-tags-list'",
+      "data-testid='counter-approved'",
+      "data-testid='counter-denied'",
+      "data-testid='history-export-btn'"
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Strictly avoid any border-radius. All elements MUST be rounded-none.",
+    "Do not use generic fonts like Inter, Roboto, or standard sans-serifs. Integrate 'Anton' for headings and 'IBM Plex Mono' for all data, descriptions, and UI text.",
+    "The layout should feel like an asymmetric terminal. The left side (Mockup Viewer) must be pure #000000 background to represent the black t-shirt, allowing stark white graphics to pop.",
+    "Use Phosphor icons. Install via: yarn add @phosphor-icons/react.",
+    "The 'THE GRIND' description block should be distinct, perhaps using a left-border treatment with mono typography.",
+    "Approve/Deny buttons must be massive, taking up the full bottom span of the viewport or standard grid, resembling heavy machinery triggers.",
+    "Apply the noise/grunge textures at a low opacity to the backgrounds of panels (excluding the pure black mockup viewer) to enforce the print shop aesthetic."
+  ]
+}
