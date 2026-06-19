@@ -293,7 +293,10 @@ async def get_capsule_image(capsule_id: str, side: str):
     doc = await capsules_coll.find_one({"id": capsule_id}, {field: 1, "_id": 0})
     if not doc or not doc.get(field):
         raise HTTPException(status_code=404, detail="Image not found")
-    return Response(content=base64.b64decode(doc[field]), media_type="image/png")
+    # Gemini may return JPEG or PNG; detect from magic bytes
+    raw = base64.b64decode(doc[field])
+    mime = "image/jpeg" if raw[:3] == b"\xff\xd8\xff" else "image/png"
+    return Response(content=raw, media_type=mime)
 
 
 @api_router.get("/capsules/export.csv")
