@@ -1,14 +1,23 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { toast } from "sonner";
-import { CheckSquareOffset, XSquare, ArrowsClockwise } from "@phosphor-icons/react";
 import {
-  generateCapsule,
+  CheckSquareOffset,
+  XSquare,
+  ArrowsClockwise,
+  Gear,
+  Stack,
+} from "@phosphor-icons/react";
+import {
+  nextCapsule,
   approveCapsule,
   denyCapsule,
   fetchStats,
+  queueStatus,
+  regenerateImage,
 } from "@/lib/api";
 import MockupViewer from "@/components/MockupViewer";
 import SeoPanel from "@/components/SeoPanel";
+import SettingsModal from "@/components/SettingsModal";
 
 const StatItem = ({ label, value, testId }) => (
   <div className="flex flex-col" data-testid={testId}>
@@ -21,7 +30,7 @@ const StatItem = ({ label, value, testId }) => (
   </div>
 );
 
-const LoadingState = () => (
+const LoadingState = ({ note }) => (
   <div className="flex flex-col items-center justify-center min-h-[60vh] gap-6 text-zinc-500">
     <div className="relative w-32 h-32 border border-zinc-800 overflow-hidden bg-black">
       <div className="scanline" />
@@ -31,7 +40,7 @@ const LoadingState = () => (
     </div>
     <div className="text-center">
       <p className="font-heading text-2xl uppercase tracking-tight text-zinc-300">
-        Forging Capsule
+        {note || "Forging Capsule"}
       </p>
       <p className="text-[11px] uppercase tracking-[0.3em] font-body mt-2">
         gemini engine // ink rendering<span className="blink">_</span>
@@ -42,46 +51,67 @@ const LoadingState = () => (
 
 const Dashboard = () => {
   const [capsule, setCapsule] = useState(null);
+  const [edits, setEdits] = useState({});
   const [loading, setLoading] = useState(false);
   const [acting, setActing] = useState(false);
   const [counts, setCounts] = useState({ approved: 0, denied: 0, reviewed: 0 });
+  const [queue, setQueue] = useState({ depth: 0, target: 5 });
+  const [showSettings, setShowSettings] = useState(false);
+  const pollRef = useRef(null);
 
   const loadStats = useCallback(async () => {
     try {
       const s = await fetchStats();
       setCounts((c) => ({ ...c, approved: s.approved }));
     } catch {
-      // non-critical
+      /* non-critical */
+    }
+  }, []);
+
+  const pollQueue = useCallback(async () => {
+    try {
+      const q = await queueStatus();
+      setQueue(q);
+    } catch {
+      /* non-critical */
     }
   }, []);
 
   const loadNext = useCallback(async () => {
     setCapsule(null);
+    setEdits({});
     setLoading(true);
     try {
-      const c = await generateCapsule();
+      const c = await nextCapsule();
       setCapsule(c);
     } catch (e) {
       console.error(e);
-      toast.error("Generation failed", {
+      toast.error("Load next failed", {
         description: e?.response?.data?.detail || e.message,
       });
     } finally {
       setLoading(false);
+      pollQueue();
     }
-  }, []);
+  }, [pollQueue]);
 
   useEffect(() => {
     loadStats();
     loadNext();
-  }, [loadNext, loadStats]);
+    pollRef.current = setInterval(pollQueue, 3000);
+    return () => clearInterval(pollRef.current);
+  }, [loadNext, loadStats, pollQueue]);
 
   const onApprove = async () => {
     if (!capsule || acting) return;
     setActing(true);
     try {
-      await approveCapsule(capsule.id);
-      toast.success(`Approved // ${capsule.capsule_name}`);
+      const payload = {};
+      if (edits.title !== undefined) payload.title = edits.title;
+      if (edits.capsule_name !== undefined) payload.capsule_name = edits.capsule_name;
+      if (edits.tags !== undefined) payload.tags = edits.tags;
+      await approveCapsule(capsule.id, payload);
+      toast.success(`Approved // ${edits.capsule_name ?? capsule.capsule_name}`);
       setCounts((c) => ({
         approved: c.approved + 1,
         denied: c.denied,
@@ -118,11 +148,28 @@ const Dashboard = () => {
     }
   };
 
+  const onRegenerate = async (side) => {
+    if (!capsule) return;
+    try {
+      const updated = await regenerateImage(capsule.id, side);
+      setCapsule(updated);
+      toast.success(`Regenerated ${side} graphic`);
+    } catch (e) {
+      toast.error("Regenerate failed", {
+        description: e?.response?.data?.detail || e.message,
+      });
+      throw e;
+    }
+  };
+
+  // Queue depth pip indicator
+  const pips = Array.from({ length: Math.max(1, queue.target) }, (_, i) => i);
+
   return (
     <main className="relative grunge-overlay" data-testid="dashboard-page">
       {/* counter strip */}
       <div
-        className="flex gap-8 items-center px-6 lg:px-8 py-5 border-b border-zinc-800 bg-zinc-950 relative z-10"
+        className="flex flex-wrap gap-x-8 gap-y-3 items-center px-6 lg:px-8 py-5 border-b border-zinc-800 bg-zinc-950 relative z-10"
         data-testid="counter-strip"
       >
         <StatItem label="Approved" value={counts.approved} testId="counter-approved" />
@@ -130,31 +177,47 @@ const Dashboard = () => {
         <StatItem label="Denied (session)" value={counts.denied} testId="counter-denied" />
         <div className="w-px h-8 bg-zinc-800" />
         <StatItem label="Reviewed (session)" value={counts.reviewed} testId="counter-reviewed" />
-        <div className="flex-1" />
-        <div className="hidden md:flex flex-col items-end text-right">
-          <span className="text-[10px] text-zinc-500 uppercase tracking-[0.3em]">
-            Active Capsule
+        <div className="w-px h-8 bg-zinc-800" />
+        <div className="flex flex-col" data-testid="queue-indicator">
+          <span className="text-[10px] text-zinc-500 font-body uppercase tracking-[0.3em] flex items-center gap-1.5">
+            <Stack size={10} weight="bold" />
+            Queue
           </span>
-          <span className="font-heading text-lg uppercase text-zinc-300 leading-none mt-1">
-            {capsule?.capsule_name || "...waiting"}
-          </span>
+          <div className="flex gap-1 mt-1.5 items-center">
+            {pips.map((i) => (
+              <span
+                key={i}
+                className={`w-2 h-4 ${i < queue.depth ? "bg-white" : "bg-zinc-800 border border-zinc-700"}`}
+              />
+            ))}
+            <span className="ml-2 text-[10px] text-zinc-500 font-body">
+              {queue.depth}/{queue.target}
+            </span>
+          </div>
         </div>
+        <div className="flex-1" />
+        <button
+          data-testid="open-settings"
+          onClick={() => setShowSettings(true)}
+          className="flex items-center gap-2 text-[11px] uppercase tracking-[0.25em] font-body text-zinc-400 hover:text-white border border-zinc-800 hover:border-zinc-600 px-3 py-2 transition-colors"
+        >
+          <Gear size={14} weight="bold" />
+          Settings
+        </button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 min-h-[calc(100vh-200px)]">
-        {/* Mockup viewer */}
         <section
           className="col-span-1 lg:col-span-8 bg-black border-r border-zinc-800 flex items-center justify-center relative overflow-hidden"
           data-testid="mockup-section"
         >
           {loading || !capsule ? (
-            <LoadingState />
+            <LoadingState note={queue.depth > 0 ? "Loading from queue" : "Forging Capsule"} />
           ) : (
-            <MockupViewer capsule={capsule} loading={false} />
+            <MockupViewer capsule={capsule} onRegenerate={onRegenerate} />
           )}
         </section>
 
-        {/* SEO panel */}
         <aside
           className="col-span-1 lg:col-span-4 bg-zinc-950 overflow-y-auto max-h-[calc(100vh-260px)] relative"
           data-testid="seo-section"
@@ -164,12 +227,11 @@ const Dashboard = () => {
               // Drafting SEO payload<span className="blink">_</span>
             </div>
           ) : (
-            <SeoPanel capsule={capsule} />
+            <SeoPanel capsule={capsule} edits={edits} onChangeEdits={setEdits} />
           )}
         </aside>
       </div>
 
-      {/* Action footer */}
       <div className="grid grid-cols-2 border-t border-zinc-800 relative z-10">
         <button
           data-testid="deny-button"
@@ -190,6 +252,15 @@ const Dashboard = () => {
           Approve
         </button>
       </div>
+
+      <SettingsModal
+        open={showSettings}
+        onClose={() => setShowSettings(false)}
+        onSaved={() => {
+          // queue was flushed server-side; refresh status
+          pollQueue();
+        }}
+      />
     </main>
   );
 };
