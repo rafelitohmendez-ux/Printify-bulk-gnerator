@@ -132,7 +132,7 @@ async def push_capsule_as_draft(
     # 3. Construct product payload with front (left-chest) + back placements
     # Standard Printify positions for apparel: "front" and "back".
     variants_array = [
-        {"id": vid, "price": 2500, "is_enabled": True}  # $25.00 default
+        {"id": vid, "price": 3200, "is_enabled": True}  # $32.00
         for vid in variant_ids
     ]
     print_areas = [
