@@ -84,6 +84,57 @@ async def create_product(shop_id: int, payload: Dict[str, Any]) -> Dict[str, Any
         return await _check(await c.post(f"/shops/{shop_id}/products.json", json=payload))
 
 
+async def get_product(shop_id: int, product_id: str) -> Dict[str, Any]:
+    async with _client() as c:
+        return await _check(await c.get(f"/shops/{shop_id}/products/{product_id}.json"))
+
+
+async def update_product(shop_id: int, product_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async with _client() as c:
+        return await _check(
+            await c.put(f"/shops/{shop_id}/products/{product_id}.json", json=payload)
+        )
+
+
+def _pick_front_mockup(images: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """From a product's image list, pick the front-view mockup that best
+    showcases a small left-chest design. Prefer 'close'/'detail'/'chest' URLs."""
+    fronts = [img for img in images if (img.get("position") or "").lower() == "front"]
+    if not fronts:
+        return None
+    for keyword in ("close", "detail", "zoom", "chest", "crop"):
+        for img in fronts:
+            if keyword in (img.get("src") or "").lower():
+                return img
+    return fronts[0]
+
+
+async def prioritize_front_mockup(shop_id: int, product_id: str) -> Optional[str]:
+    """Mark a front-view mockup as default + selected for publishing.
+    Returns src of chosen image, or None if no update made."""
+    product = await get_product(shop_id, product_id)
+    images = product.get("images") or []
+    if not images:
+        return None
+    chosen = _pick_front_mockup(images)
+    if not chosen:
+        return None
+    chosen_src = chosen.get("src")
+    updated = []
+    for img in images:
+        is_chosen = img.get("src") == chosen_src
+        updated.append({
+            "src": img.get("src"),
+            "variant_ids": img.get("variant_ids", []),
+            "position": img.get("position"),
+            "is_default": is_chosen,
+            "is_selected_for_publishing": is_chosen
+            or bool(img.get("is_selected_for_publishing")),
+        })
+    await update_product(shop_id, product_id, {"images": updated})
+    return chosen_src
+
+
 def _pick_black_variants(variants_payload: Dict[str, Any], max_variants: int = 8) -> List[int]:
     """From a variants response, return variant IDs whose color is black."""
     variants = variants_payload.get("variants") or []
@@ -180,4 +231,14 @@ async def push_capsule_as_draft(
     # 4. Create as draft (no publish call - product stays unpublished until user clicks
     # publish in Printify or via a separate endpoint).
     product = await create_product(shop_id, product_payload)
+
+    # 5. Promote a front-view mockup as default so the small left-chest design is
+    # immediately visible in the Printify dashboard + on the storefront thumbnail.
+    pid = product.get("id")
+    if pid:
+        try:
+            await prioritize_front_mockup(shop_id, str(pid))
+        except Exception:
+            logger.warning("prioritize_front_mockup failed (non-fatal)", exc_info=True)
+
     return product
