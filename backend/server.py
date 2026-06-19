@@ -192,12 +192,14 @@ You generate ONE shirt design capsule at a time. Return ONLY raw JSON, no prose,
 {
   "capsule_name": "2-3 word evocative name (e.g., 'Iron Vigil', 'Hollow Hours', 'Ash Liturgy', 'Concrete Saints')",
   "title": "SEO product title following this exact formula: '{capsule_name} - Oversized Back Print T-Shirt | Gothic Industrial Streetwear | Dark Alt Y2K Tee'",
-  "front_concept": "One sentence describing a small left-chest pocket print: minimal, symbolic, intricate. Keep under 20 words.",
+  "front_concept": "STRICTLY a single, ultra-minimal MICRO-GRAPHIC for the left-chest / center-front position. Must be ONE isolated symbol or compact mark - a single sigil, a small monogram, a tiny industrial icon, a compact occult glyph, a minimal geometric mark, a single rune, a tiny seal, a clean wordmark in 1-2 letters, or a small abstract icon. Stark, clean, industrial linework only. NO scenes. NO multiple elements. NO illustrations of objects or figures. ONE symbol on a void. Keep under 15 words.",
   "back_concept": "One sentence describing a large oversized back graphic that fills the back: detailed, monolithic gothic/industrial imagery. Keep under 25 words.",
   "tags": ["array of EXACTLY 13 SEO tags - MUST include 'Gothic Streetwear' and 'Back Print Shirt'; remaining 11 are unique tags specific to this design's theme/imagery"]
 }
 
-Be SPECIFIC. Avoid generic clichés. Reference texture, action, decay, religious or industrial machinery."""
+For front_concept specifically: think 'a tiny ink stamp', 'a watch-dial-sized mark', 'a single hand-pulled glyph'. NEVER a full illustration. NEVER multiple visual elements. The front is a whisper; the back is a scream.
+
+For back_concept: be SPECIFIC, dense, monolithic. Reference texture, action, decay, religious or industrial machinery."""
     if banned_words:
         joined = ", ".join(f"'{w}'" for w in banned_words)
         base += f"\n\nABSOLUTELY DO NOT use any of these banned words or their close variants anywhere in the output: {joined}. If you would normally use them, substitute with a different, vivid alternative."
@@ -281,12 +283,16 @@ async def llm_generate_image(prompt: str) -> Optional[str]:
 
 def build_front_prompt(front_concept: str) -> str:
     return (
-        f"Single graphic asset for a t-shirt left-chest pocket print. "
-        f"Stark pure white ink illustration on a 100% pure pitch-black (#000000) background. "
+        f"A single, ultra-minimal MICRO-GRAPHIC asset for a t-shirt left-chest / center-front position. "
+        f"Stark pure white ink on a 100% pure pitch-black (#000000) background. "
         f"Subject: {front_concept}. "
-        f"Style: gothic industrial streetwear, intricate linework, high-contrast monochrome, "
-        f"silkscreen-print look. Small isolated motif centered on canvas with generous black space. "
-        f"NO shirt mockup, NO model, NO text labels - only the white-on-black graphic asset itself. Square 1:1."
+        f"STRICT RULES: ONE isolated symbol only. Compact, tiny scale, fits inside a small badge area. "
+        f"Clean industrial linework, no shading gradients, no halftones, no texture noise. "
+        f"Single visual element only - NO scenes, NO multiple objects, NO illustrative composition. "
+        f"Think: a single ink stamp, a small monogram, a minimalist sigil, a watch-dial-sized mark. "
+        f"Generous black void around the symbol (at least 40% empty space on every side). "
+        f"NO shirt mockup, NO model, NO text labels, NO watermark - only the isolated white symbol on pure black. "
+        f"Stark, clean, industrial, minimal. Square 1:1 canvas."
     )
 
 
