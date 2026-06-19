@@ -1,0 +1,27 @@
+{
+  "summary": "Full re-test after main agent fixed History.jsx Archive icon, image Content-Type detection, and topped up EMERGENT_LLM_KEY. Backend: 14/14 pytest passing in 31.86s (generate AI call, exactly 13 tags incl. 'Gothic Streetwear' + 'Back Print Shirt', THE GRIND template, approve/deny/list/stats, image bytes + correct Content-Type, CSV export). Frontend: Dashboard mounts cleanly (no compile error), counters update on Approve (+1 approved, +1 reviewed) and Deny (+1 denied, +1 reviewed), next capsule auto-loads after action, /history shows archive items with images + CSV export anchor, navigation between / and /history works.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_capsules_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Backend: 'denied' status is never stored - deny just deletes. That matches the deny-deletes spec, but the 'draft' status is also never queried/cleaned up; orphan drafts can accumulate if user navigates away mid-generation. Consider TTL on draft capsules or a periodic cleanup.",
+    "Backend: generate endpoint timeout is unbounded - if upstream LLM hangs, FastAPI worker can block. Consider asyncio.wait_for() with a hard ceiling.",
+    "Frontend: Dashboard fetches stats only on mount + does not refresh denied counter from server (denied is session-only by design, which is fine, but the README/spec should document this).",
+    "Frontend: Approve/Deny disabled state during 'acting + loading' is correct; however, the new capsule generation kicks off immediately after approve - if user spams, the second click is safely guarded by `acting` flag.",
+    "Backend export.csv builds image URLs as relative '/api/capsules/...' - CSV consumers downloading offline lose origin. Consider using REACT_APP_BACKEND_URL or request.base_url."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_capsules_api.py",
+    "/app/backend/tests/__init__.py"
+  ],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100% (all flows verified)"},
+  "test_credentials": "n/a (no auth)",
+  "seed_data_creation": "Each pytest run creates ~2 capsules (one approved via generated_capsule fixture, one denied via TestDenyFlow). Live Playwright run also created 1 approved + 1 denied capsule. Approved capsules now total 3 in DB.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All previously reported issues fixed. backend_test at /app/backend/tests/test_capsules_api.py is reusable - relies on REACT_APP_BACKEND_URL env (defaults to live URL). Each full run consumes ~3 LLM generations (~$0.05). For UI re-test use data-testids: dashboard-page, counter-approved, counter-denied, counter-reviewed, approve-button, deny-button, seo-panel, mockup-viewer-front, mockup-viewer-back, history-page, history-export-btn, nav-dashboard, nav-history, brand-logo, archive-item-{id}. Generation takes 20-60s so use wait_for_selector with timeout>=90000."
+}
