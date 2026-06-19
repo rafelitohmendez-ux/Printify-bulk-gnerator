@@ -31,6 +31,14 @@ from starlette.middleware.cors import CORSMiddleware
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
+from printify_client import (
+    GILDAN_5000_BLUEPRINT_ID,
+    PrintifyError,
+    list_print_providers,
+    list_shops,
+    push_capsule_as_draft,
+)
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
@@ -124,6 +132,9 @@ class CapsulePublic(BaseModel):
     theme_seed: Optional[str] = None
     created_at: str
     approved_at: Optional[str] = None
+    printify_product_id: Optional[str] = None
+    printify_push_status: Optional[str] = None  # 'success' | 'failed' | None
+    printify_push_error: Optional[str] = None
 
 
 class CustomTheme(BaseModel):
@@ -137,6 +148,10 @@ class SettingsDoc(BaseModel):
     custom_themes: List[CustomTheme] = []
     banned_words: List[str] = []
     queue_size: int = DEFAULT_QUEUE_SIZE
+    # Printify integration
+    printify_shop_id: Optional[int] = None
+    printify_print_provider_id: Optional[int] = None
+    printify_auto_push: bool = False
 
 
 class SettingsUpdate(BaseModel):
@@ -144,6 +159,9 @@ class SettingsUpdate(BaseModel):
     custom_themes: Optional[List[CustomTheme]] = None
     banned_words: Optional[List[str]] = None
     queue_size: Optional[int] = None
+    printify_shop_id: Optional[int] = None
+    printify_print_provider_id: Optional[int] = None
+    printify_auto_push: Optional[bool] = None
 
 
 class ApprovePayload(BaseModel):
@@ -432,6 +450,41 @@ async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = N
     result = await capsules_coll.update_one({"id": capsule_id}, {"$set": update})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Capsule not found")
+
+    # Auto-push to Printify as draft if configured
+    settings = await get_settings()
+    if (
+        settings.get("printify_auto_push")
+        and settings.get("printify_shop_id")
+        and settings.get("printify_print_provider_id")
+    ):
+        full = await capsules_coll.find_one({"id": capsule_id}, {"_id": 0})
+        try:
+            product = await push_capsule_as_draft(
+                shop_id=int(settings["printify_shop_id"]),
+                print_provider_id=int(settings["printify_print_provider_id"]),
+                capsule=full,
+            )
+            pid = str(product.get("id") or "")
+            await capsules_coll.update_one(
+                {"id": capsule_id},
+                {"$set": {
+                    "printify_product_id": pid,
+                    "printify_push_status": "success",
+                    "printify_push_error": None,
+                }},
+            )
+            logger.info(f"Pushed capsule {capsule_id} to Printify product {pid}")
+        except Exception as e:
+            logger.exception("printify push failed")
+            await capsules_coll.update_one(
+                {"id": capsule_id},
+                {"$set": {
+                    "printify_push_status": "failed",
+                    "printify_push_error": str(e)[:500],
+                }},
+            )
+
     doc = await capsules_coll.find_one(
         {"id": capsule_id},
         {"_id": 0, "front_image_b64": 0, "back_image_b64": 0},
@@ -550,6 +603,10 @@ async def get_settings_endpoint():
         "banned_words": s.get("banned_words") or [],
         "queue_size": s.get("queue_size") or DEFAULT_QUEUE_SIZE,
         "built_in_themes": [{"key": t["key"], "name": t["name"]} for t in DEFAULT_THEMES],
+        "printify_shop_id": s.get("printify_shop_id"),
+        "printify_print_provider_id": s.get("printify_print_provider_id"),
+        "printify_auto_push": bool(s.get("printify_auto_push")),
+        "printify_token_configured": bool(os.environ.get("PRINTIFY_API_TOKEN")),
     }
 
 
@@ -568,13 +625,81 @@ async def update_settings(payload: SettingsUpdate):
         flush_queue = True
     if payload.queue_size is not None:
         update["queue_size"] = max(0, min(20, int(payload.queue_size)))
+    if payload.printify_shop_id is not None:
+        update["printify_shop_id"] = int(payload.printify_shop_id) if payload.printify_shop_id else None
+    if payload.printify_print_provider_id is not None:
+        update["printify_print_provider_id"] = (
+            int(payload.printify_print_provider_id) if payload.printify_print_provider_id else None
+        )
+    if payload.printify_auto_push is not None:
+        update["printify_auto_push"] = bool(payload.printify_auto_push)
     if update:
         await settings_coll.update_one({"id": "config"}, {"$set": update}, upsert=True)
     if flush_queue:
-        # Drop existing pre-warmed drafts so the new theme/ban-words take effect immediately
         deleted = await capsules_coll.delete_many({"status": "draft", "consumed": False})
         logger.info(f"Flushed {deleted.deleted_count} pre-warmed drafts on settings update")
     return await get_settings_endpoint()
+
+
+# -----------------------------
+# Printify endpoints
+# -----------------------------
+@api_router.get("/printify/shops")
+async def printify_shops():
+    try:
+        shops = await list_shops()
+        return {"shops": shops}
+    except PrintifyError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@api_router.get("/printify/print-providers")
+async def printify_print_providers():
+    try:
+        providers = await list_print_providers(GILDAN_5000_BLUEPRINT_ID)
+        return {"blueprint_id": GILDAN_5000_BLUEPRINT_ID, "providers": providers}
+    except PrintifyError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@api_router.post("/capsules/{capsule_id}/push-printify")
+async def manual_push(capsule_id: str):
+    """Manual on-demand push of an already-approved capsule."""
+    settings = await get_settings()
+    if not settings.get("printify_shop_id") or not settings.get("printify_print_provider_id"):
+        raise HTTPException(
+            status_code=400,
+            detail="Configure printify_shop_id and printify_print_provider_id in settings first.",
+        )
+    full = await capsules_coll.find_one({"id": capsule_id}, {"_id": 0})
+    if not full:
+        raise HTTPException(status_code=404, detail="Capsule not found")
+    try:
+        product = await push_capsule_as_draft(
+            shop_id=int(settings["printify_shop_id"]),
+            print_provider_id=int(settings["printify_print_provider_id"]),
+            capsule=full,
+        )
+        pid = str(product.get("id") or "")
+        await capsules_coll.update_one(
+            {"id": capsule_id},
+            {"$set": {
+                "printify_product_id": pid,
+                "printify_push_status": "success",
+                "printify_push_error": None,
+            }},
+        )
+        return {"ok": True, "printify_product_id": pid}
+    except Exception as e:
+        logger.exception("manual printify push failed")
+        await capsules_coll.update_one(
+            {"id": capsule_id},
+            {"$set": {
+                "printify_push_status": "failed",
+                "printify_push_error": str(e)[:500],
+            }},
+        )
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 # -----------------------------

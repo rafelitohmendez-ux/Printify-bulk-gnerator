@@ -22,6 +22,8 @@ export const queueStatus = () => api.get("/capsules/queue/status").then((r) => r
 export const exportCsvUrl = () => `${API_BASE}/capsules/export.csv`;
 export const imageUrl = (id, side, bust) =>
   `${API_BASE}/capsules/${id}/image/${side}${bust ? `?t=${bust}` : ""}`;
+export const pushToPrintify = (id) =>
+  api.post(`/capsules/${id}/push-printify`).then((r) => r.data);
 
 // Settings
 export const getSettings = () => api.get("/settings").then((r) => r.data);

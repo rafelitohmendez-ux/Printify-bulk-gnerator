@@ -1,0 +1,183 @@
+"""Printify API v1 client wrapper."""
+import base64
+import logging
+import os
+from typing import Any, Dict, List, Optional
+
+import httpx
+
+logger = logging.getLogger("printify")
+
+PRINTIFY_BASE_URL = "https://api.printify.com/v1"
+
+# Blueprint ID 6 = Gildan 5000 "Unisex Heavy Cotton Tee" on Printify catalog
+GILDAN_5000_BLUEPRINT_ID = 6
+
+
+class PrintifyError(Exception):
+    pass
+
+
+def _get_token() -> str:
+    token = os.environ.get("PRINTIFY_API_TOKEN")
+    if not token:
+        raise PrintifyError("PRINTIFY_API_TOKEN not configured in backend/.env")
+    return token
+
+
+def _client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        base_url=PRINTIFY_BASE_URL,
+        headers={
+            "Authorization": f"Bearer {_get_token()}",
+            "User-Agent": "TwelveHoursCO-Dashboard/1.0",
+            "Content-Type": "application/json;charset=utf-8",
+        },
+        timeout=60.0,
+    )
+
+
+async def _check(resp: httpx.Response) -> Any:
+    if resp.status_code >= 400:
+        try:
+            detail = resp.json()
+        except Exception:
+            detail = resp.text
+        raise PrintifyError(f"Printify {resp.request.method} {resp.request.url.path} -> {resp.status_code}: {detail}")
+    if resp.status_code == 204 or not resp.content:
+        return None
+    return resp.json()
+
+
+async def list_shops() -> List[Dict[str, Any]]:
+    async with _client() as c:
+        return await _check(await c.get("/shops.json"))
+
+
+async def list_print_providers(blueprint_id: int = GILDAN_5000_BLUEPRINT_ID) -> List[Dict[str, Any]]:
+    async with _client() as c:
+        return await _check(await c.get(f"/catalog/blueprints/{blueprint_id}/print_providers.json"))
+
+
+async def list_variants(blueprint_id: int, print_provider_id: int, show_out_of_stock: int = 0) -> Dict[str, Any]:
+    async with _client() as c:
+        return await _check(
+            await c.get(
+                f"/catalog/blueprints/{blueprint_id}/print_providers/{print_provider_id}/variants.json",
+                params={"show-out-of-stock": show_out_of_stock},
+            )
+        )
+
+
+async def upload_image_base64(file_name: str, base64_data: str) -> Dict[str, Any]:
+    async with _client() as c:
+        return await _check(
+            await c.post(
+                "/uploads/images.json",
+                json={"file_name": file_name, "contents": base64_data},
+            )
+        )
+
+
+async def create_product(shop_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async with _client() as c:
+        return await _check(await c.post(f"/shops/{shop_id}/products.json", json=payload))
+
+
+def _pick_black_variants(variants_payload: Dict[str, Any], max_variants: int = 8) -> List[int]:
+    """From a variants response, return variant IDs whose color is black."""
+    variants = variants_payload.get("variants") or []
+    black_ids: List[int] = []
+    for v in variants:
+        options = v.get("options") or {}
+        color = (options.get("color") or "").strip().lower()
+        title = (v.get("title") or "").lower()
+        if "black" in color or "black" in title:
+            black_ids.append(int(v.get("id")))
+    return black_ids[:max_variants]
+
+
+async def push_capsule_as_draft(
+    shop_id: int,
+    print_provider_id: int,
+    capsule: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Upload both images and create a draft product on Printify.
+
+    Returns the created product dict (has 'id' which is the Printify product id).
+    """
+    # 1. Upload images
+    front_b64 = capsule.get("front_image_b64")
+    back_b64 = capsule.get("back_image_b64")
+    if not front_b64 or not back_b64:
+        raise PrintifyError("Capsule missing front/back image data")
+
+    cname = (capsule.get("capsule_name") or "capsule").replace(" ", "_").lower()
+    front_upload = await upload_image_base64(f"{cname}_front.png", front_b64)
+    back_upload = await upload_image_base64(f"{cname}_back.png", back_b64)
+    front_image_id = front_upload.get("id")
+    back_image_id = back_upload.get("id")
+    if not front_image_id or not back_image_id:
+        raise PrintifyError(f"Image upload missing id: front={front_upload}, back={back_upload}")
+
+    # 2. Get black variants for this blueprint+provider
+    variants_payload = await list_variants(GILDAN_5000_BLUEPRINT_ID, print_provider_id, show_out_of_stock=0)
+    variant_ids = _pick_black_variants(variants_payload)
+    if not variant_ids:
+        # Fallback: just use first 5 variants of any color
+        variant_ids = [int(v["id"]) for v in (variants_payload.get("variants") or [])[:5]]
+    if not variant_ids:
+        raise PrintifyError("No variants available for this blueprint/provider combination")
+
+    # 3. Construct product payload with front (left-chest) + back placements
+    # Standard Printify positions for apparel: "front" and "back".
+    variants_array = [
+        {"id": vid, "price": 2500, "is_enabled": True}  # $25.00 default
+        for vid in variant_ids
+    ]
+    print_areas = [
+        {
+            "variant_ids": variant_ids,
+            "placeholders": [
+                {
+                    "position": "front",
+                    "images": [
+                        {
+                            "id": front_image_id,
+                            "x": 0.27,  # left-chest area
+                            "y": 0.32,
+                            "scale": 0.18,
+                            "angle": 0,
+                        }
+                    ],
+                },
+                {
+                    "position": "back",
+                    "images": [
+                        {
+                            "id": back_image_id,
+                            "x": 0.5,
+                            "y": 0.5,
+                            "scale": 1.0,
+                            "angle": 0,
+                        }
+                    ],
+                },
+            ],
+        }
+    ]
+
+    product_payload = {
+        "title": capsule.get("title") or capsule.get("capsule_name", "Untitled"),
+        "description": capsule.get("description") or "",
+        "blueprint_id": GILDAN_5000_BLUEPRINT_ID,
+        "print_provider_id": print_provider_id,
+        "variants": variants_array,
+        "print_areas": print_areas,
+        "tags": (capsule.get("tags") or [])[:13],
+    }
+
+    # 4. Create as draft (no publish call - product stays unpublished until user clicks
+    # publish in Printify or via a separate endpoint).
+    product = await create_product(shop_id, product_payload)
+    return product

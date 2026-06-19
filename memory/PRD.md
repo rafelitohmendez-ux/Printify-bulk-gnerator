@@ -21,13 +21,18 @@ Build a web application for TwelveHoursCO Print-on-Demand business. A bulk produ
 - Generator + dashboard + approve/deny + history + CSV export
 
 ### v2 (2026-02) — Workflow Acceleration
-- **Background pre-warm queue (P1)**: `queue_worker` keeps N (default 5) unconsumed drafts in MongoDB; `GET /api/capsules/next` atomically pops one with `find_one_and_update` so approve loads instantly. Synchronous fallback when queue is empty.
-- **Queue depth indicator** in dashboard counter strip (pip bar + n/target text), polls every 3s.
-- **Theme seed selector (P1)**: 18 built-in gothic/industrial themes + custom themes (CRUD list with name + seed prompt). Saved settings flush the pre-warmed queue.
-- **Ban-words list (P1)**: User-curated banned words injected into LLM system prompt; flush queue on update.
-- **Inline editing pre-approve (P2)**: capsule name, SEO title, and 13 tags are all inline-editable on the dashboard; edits POST as body to `/approve` and override the persisted record.
-- **Single-side image regeneration (P2)**: Per-side Regen button on each mockup; `POST /api/capsules/{id}/regenerate-image/{side}`; cache-busted image URL.
-- **TTL cleanup (P2)**: `cleanup_worker` runs every 5 min and deletes drafts older than 1 hour to keep MongoDB clean.
+- Pre-warm queue (5), theme seeds (built-in + custom), ban-words, inline editing, per-side image regen, TTL cleanup
+
+### v3 (2026-02) — Printify Integration
+- `printify_client.py`: shop discovery, print provider listing, base64 image upload, draft product creation for Gildan 5000 blueprint (#6)
+- Auto-selects black variants from `list_variants`; falls back to first 5 of any color
+- Front placement (left-chest, x=0.27 y=0.32 scale=0.18) + Back placement (full-back, x=0.5 y=0.5 scale=1.0)
+- `GET /api/printify/shops`, `GET /api/printify/print-providers` for UI discovery
+- `POST /api/capsules/{id}/push-printify` for manual on-demand push
+- `POST /api/capsules/{id}/approve` auto-pushes when `printify_auto_push` is true + shop/provider are set
+- Settings modal: shop dropdown, print provider dropdown, auto-push toggle
+- History: "On Printify" badge with link, "Retry Push" on failure, manual "Push" button
+- Token stored securely in `/app/backend/.env` (`PRINTIFY_API_TOKEN`)
 
 ### v2 Endpoints added
 - `GET /api/capsules/next` (atomic queue pop)

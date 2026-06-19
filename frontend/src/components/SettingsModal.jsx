@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { X, Plus, FloppyDisk, Tag, Stack } from "@phosphor-icons/react";
-import { getSettings, updateSettings } from "@/lib/api";
+import { X, Plus, FloppyDisk, Tag, Stack, Storefront } from "@phosphor-icons/react";
+import { getSettings, updateSettings, api } from "@/lib/api";
 
 const SectionTitle = ({ icon, children }) => (
   <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.3em] text-zinc-500 font-body border-b border-zinc-800 pb-2 mb-3">
@@ -21,6 +21,14 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
   const [queueSize, setQueueSize] = useState(5);
   const [newCustomName, setNewCustomName] = useState("");
   const [newCustomPrompt, setNewCustomPrompt] = useState("");
+  // Printify
+  const [shops, setShops] = useState([]);
+  const [providers, setProviders] = useState([]);
+  const [shopId, setShopId] = useState("");
+  const [providerId, setProviderId] = useState("");
+  const [autoPush, setAutoPush] = useState(false);
+  const [tokenConfigured, setTokenConfigured] = useState(false);
+  const [loadingPrintify, setLoadingPrintify] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -32,10 +40,35 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
         setCustoms(s.custom_themes || []);
         setBanned(s.banned_words || []);
         setQueueSize(s.queue_size ?? 5);
+        setShopId(s.printify_shop_id ? String(s.printify_shop_id) : "");
+        setProviderId(
+          s.printify_print_provider_id ? String(s.printify_print_provider_id) : ""
+        );
+        setAutoPush(!!s.printify_auto_push);
+        setTokenConfigured(!!s.printify_token_configured);
       })
       .catch((e) => toast.error("Failed to load settings", { description: e.message }))
       .finally(() => setLoading(false));
   }, [open]);
+
+  useEffect(() => {
+    if (!open || !tokenConfigured) return;
+    setLoadingPrintify(true);
+    Promise.all([
+      api.get("/printify/shops").then((r) => r.data.shops || []),
+      api.get("/printify/print-providers").then((r) => r.data.providers || []),
+    ])
+      .then(([s, p]) => {
+        setShops(s);
+        setProviders(p);
+      })
+      .catch((e) => {
+        toast.error("Printify discovery failed", {
+          description: e?.response?.data?.detail || e.message,
+        });
+      })
+      .finally(() => setLoadingPrintify(false));
+  }, [open, tokenConfigured]);
 
   if (!open) return null;
 
@@ -80,6 +113,9 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
         custom_themes: customs,
         banned_words: banned,
         queue_size: queueSize,
+        printify_shop_id: shopId ? parseInt(shopId, 10) : null,
+        printify_print_provider_id: providerId ? parseInt(providerId, 10) : null,
+        printify_auto_push: autoPush,
       });
       toast.success("Settings saved // queue flushed");
       onSaved?.();
@@ -282,6 +318,77 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
               <p className="text-[10px] text-zinc-500 mt-2">
                 Higher = approve loads instantly but burns LLM credits faster.
               </p>
+            </section>
+
+            {/* Printify */}
+            <section data-testid="printify-section">
+              <SectionTitle icon={<Storefront size={14} weight="bold" />}>
+                Printify Integration
+              </SectionTitle>
+              {!tokenConfigured ? (
+                <p className="text-[11px] text-red-400">
+                  // PRINTIFY_API_TOKEN missing in backend/.env
+                </p>
+              ) : loadingPrintify ? (
+                <p className="text-[11px] text-zinc-500">// loading shops + providers...</p>
+              ) : (
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-[10px] uppercase tracking-[0.25em] text-zinc-500 block mb-1">
+                      Shop
+                    </label>
+                    <select
+                      data-testid="printify-shop-select"
+                      value={shopId}
+                      onChange={(e) => setShopId(e.target.value)}
+                      className="w-full bg-zinc-900 border border-zinc-700 px-3 py-2 text-sm text-zinc-200 font-body focus:outline-none focus:border-white"
+                    >
+                      <option value="">— select shop —</option>
+                      {shops.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.title} (#{s.id} · {s.sales_channel})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase tracking-[0.25em] text-zinc-500 block mb-1">
+                      Print Provider (Gildan 5000 - blueprint 6)
+                    </label>
+                    <select
+                      data-testid="printify-provider-select"
+                      value={providerId}
+                      onChange={(e) => setProviderId(e.target.value)}
+                      className="w-full bg-zinc-900 border border-zinc-700 px-3 py-2 text-sm text-zinc-200 font-body focus:outline-none focus:border-white"
+                    >
+                      <option value="">— select print provider —</option>
+                      {providers.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.title} (#{p.id})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <label
+                    data-testid="printify-auto-push"
+                    className="flex items-center gap-3 cursor-pointer border border-zinc-800 px-3 py-2 hover:bg-zinc-900 transition-colors"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={autoPush}
+                      onChange={(e) => setAutoPush(e.target.checked)}
+                      className="accent-white w-4 h-4"
+                    />
+                    <span className="text-sm font-body text-zinc-200">
+                      Auto-push to Printify as Draft on Approve
+                    </span>
+                  </label>
+                  <p className="text-[10px] text-zinc-500">
+                    // Pushed products land as drafts in your Printify store — review and
+                    publish from there.
+                  </p>
+                </div>
+              )}
             </section>
           </div>
         )}
