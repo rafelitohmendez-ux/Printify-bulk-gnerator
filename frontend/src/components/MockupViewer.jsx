@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ArrowsClockwise } from "@phosphor-icons/react";
 import { imageUrl } from "@/lib/api";
 
-const Tee = ({ children, label, testId, onRegen, regenerating }) => (
+const Tee = ({ children, label, testId, onRegen, regenerating, designUrl, designTestId }) => (
   <div className="flex flex-col items-center gap-3 w-full" data-testid={testId}>
     <div className="flex items-center justify-between w-full max-w-[360px]">
       <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500 font-body">
@@ -41,6 +41,27 @@ const Tee = ({ children, label, testId, onRegen, regenerating }) => (
       </svg>
       <div className="relative z-10 w-full h-full">{children}</div>
     </div>
+    {designUrl !== undefined && (
+      <div className="w-full max-w-[360px] flex flex-col gap-1.5">
+        <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-600 font-body">
+          // as-printed graphic
+        </span>
+        <div className="bg-black border border-zinc-800 aspect-square flex items-center justify-center overflow-hidden">
+          {designUrl ? (
+            <img
+              src={designUrl}
+              alt="raw design"
+              data-testid={designTestId}
+              className="w-full h-full object-contain"
+            />
+          ) : (
+            <span className="text-[9px] text-zinc-700 uppercase tracking-widest">
+              {regenerating ? "rerolling..." : "—"}
+            </span>
+          )}
+        </div>
+      </div>
+    )}
   </div>
 );
 
@@ -59,10 +80,10 @@ const MockupViewer = ({ capsule, onRegenerate }) => {
   if (!capsule?.id) {
     return (
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 p-8 lg:p-12 w-full">
-        <Tee label="// Front - Left-Chest Print" testId="mockup-viewer-front">
+        <Tee label="// Front - Left-Chest Print" testId="mockup-viewer-front" designUrl={null}>
           <Placeholder cls="top-[18%] left-[28%] w-[60px] h-[60px]" hint="FRONT" />
         </Tee>
-        <Tee label="// Back - Oversized Print" testId="mockup-viewer-back">
+        <Tee label="// Back - Oversized Print" testId="mockup-viewer-back" designUrl={null}>
           <Placeholder cls="top-[14%] left-[14%] right-[14%] bottom-[18%]" hint="BACK" />
         </Tee>
       </div>
@@ -90,6 +111,8 @@ const MockupViewer = ({ capsule, onRegenerate }) => {
         testId="mockup-viewer-front"
         onRegen={() => onRegen("front")}
         regenerating={regenSide === "front"}
+        designUrl={regenSide === "front" ? null : front}
+        designTestId="raw-front-design"
       >
         {regenSide === "front" ? (
           <Placeholder cls="top-[18%] left-[28%] w-[60px] h-[60px]" hint="rerolling..." />
@@ -107,6 +130,8 @@ const MockupViewer = ({ capsule, onRegenerate }) => {
         testId="mockup-viewer-back"
         onRegen={() => onRegen("back")}
         regenerating={regenSide === "back"}
+        designUrl={regenSide === "back" ? null : back}
+        designTestId="raw-back-design"
       >
         {regenSide === "back" ? (
           <Placeholder
