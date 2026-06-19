@@ -1,0 +1,46 @@
+{
+  "summary": "Backend smoke + frontend dashboard/history smoke. Two critical blockers: (1) Frontend compile error in History.jsx — wrong icon name 'ArchiveBox' imported from '@phosphor-icons/react'. The dev overlay covers EVERY route so users see nothing but the error screen. (2) EMERGENT_LLM_KEY budget has been exceeded ($0.4879 > $0.40) — POST /api/capsules/generate returns 500 immediately, so no new capsules can be generated and the Dashboard mount flow (loadNext) cannot succeed. Other backend endpoints (GET /api/, /capsules/stats, /capsules/approved, /capsules/export.csv, /capsules/{id}/image/{side}) work correctly using the one pre-existing approved capsule. Approve/Deny flows could not be exercised because no new capsule can be generated and the UI cannot mount.",
+  "tested_scope": ["backend", "frontend", "integration"],
+  "passed": [
+    "GET /api/ returns {service: TwelveHoursCO, status: online} (200)",
+    "GET /api/capsules/stats returns {approved: 1} (200)",
+    "GET /api/capsules/approved returns 1 item with exactly 13 tags including 'Gothic Streetwear' and 'Back Print Shirt', no base64 fields leaked",
+    "GET /api/capsules/export.csv returns text/csv with Content-Disposition: attachment; filename=twelvehoursco_approved.csv and full row data",
+    "GET /api/capsules/{id}/image/front and /back return 200 with Content-Type image/png (~447KB / ~939KB)"
+  ],
+  "failed": [
+    {
+      "area": "frontend/build",
+      "issue": "Compile error in /app/frontend/src/pages/History.jsx:50:40-50 — 'ArchiveBox' is not exported by '@phosphor-icons/react'. CRA error overlay blocks the entire app on ALL routes (/, /history). Use 'Archive' or 'ArchiveBoxIcon' (per the suggested-exports list in the overlay).",
+      "evidence": "Screenshot shows 'Compiled with problems: ERROR in ./src/pages/History.jsx 50:40-50 export ArchiveBox was not found in @phosphor-icons/react (possible exports: ... Archive, ArchiveBoxIcon, ArchiveIcon ...)'. All [data-testid] selectors (nav-dashboard, nav-history, brand-logo, history-export-btn, counter-*, seo-panel) return null.",
+      "priority": "HIGH"
+    },
+    {
+      "area": "backend/AI integration",
+      "issue": "POST /api/capsules/generate returns 500 in ~0.2s: 'Text generation failed ... litellm.BadRequestError: OpenAIException - Budget has been exceeded! Current cost: 0.4879702499999999, Max budget: 0.4'. EMERGENT_LLM_KEY in /app/backend/.env has exhausted its budget. Affects both Gemini 3 Flash text and Gemini Nano Banana image (same key).",
+      "evidence": "curl -X POST .../api/capsules/generate -> 500 with detail 'Budget has been exceeded'. /var/log/supervisor/backend.err.log shows same error for both text and multimodal calls.",
+      "priority": "HIGH"
+    },
+    {
+      "area": "backend/images",
+      "issue": "GET /api/capsules/{id}/image/{side} sets Content-Type: image/png but actual bytes are JPEG (magic bytes FF D8 FF E0). Browsers still render it, but the contract/spec asks for PNG. Either change the response media_type to image/jpeg or convert the upstream bytes to PNG.",
+      "evidence": "curl -> Content-Type: image/png; first 8 bytes = b'\\xff\\xd8\\xff\\xe0\\x00\\x10JF' (JPEG/JFIF, not PNG signature 89 50 4E 47).",
+      "priority": "MEDIUM"
+    },
+    {
+      "area": "integration/approve-deny",
+      "issue": "Could not exercise POST /api/capsules/{id}/approve, /deny, the Dashboard approve/deny click flow, counters increment, or load-next-on-action because (a) generate is blocked by budget and (b) the React app does not mount due to the History.jsx compile error.",
+      "evidence": "Both prerequisites failed in this run.",
+      "priority": "HIGH"
+    }
+  ],
+  "action_items": [
+    "Fix History.jsx import: replace 'ArchiveBox' with 'Archive' (or 'ArchiveBoxIcon') from '@phosphor-icons/react'. Verify the entire app compiles and Dashboard/History routes render their data-testid elements.",
+    "Refresh / increase EMERGENT_LLM_KEY budget (or rotate the key). Current usage 0.4879 has exceeded max 0.40. Retest POST /api/capsules/generate end-to-end after fix.",
+    "Either align image response Content-Type with actual bytes (image/jpeg) or re-encode upstream image to PNG before returning.",
+    "After both fixes, retest full Dashboard approve/deny loop and History CSV export click."
+  ],
+  "success_rate": {"backend": "62% (5/8 endpoints; generate broken, image content-type mismatch)", "frontend": "0% (build broken, app does not mount)"},
+  "retest_needed": true,
+  "full_testing_deferred": true
+}

@@ -1,55 +1,79 @@
-import { useEffect } from "react";
-import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
-import { HOME } from "@/constants/testIds";
+import "@/index.css";
+import { BrowserRouter, Routes, Route, Link, useLocation } from "react-router-dom";
+import { Toaster } from "sonner";
+import Dashboard from "@/pages/Dashboard";
+import History from "@/pages/History";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
-
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
-
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
-
+const NavBar = () => {
+  const { pathname } = useLocation();
+  const linkBase =
+    "px-4 py-2 text-xs uppercase tracking-[0.25em] font-body border border-zinc-800 transition-colors";
+  const active = "bg-zinc-100 text-black";
+  const inactive = "text-zinc-400 hover:text-white hover:border-zinc-600";
   return (
-    <div>
-      <header className="App-header">
-        <a
-          data-testid={HOME.emergentLink}
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
+    <header
+      data-testid="top-nav"
+      className="flex items-center justify-between px-6 py-4 border-b border-zinc-800 bg-zinc-950 relative z-10"
+    >
+      <Link to="/" className="flex items-center gap-3" data-testid="brand-logo">
+        <div className="w-10 h-10 bg-white text-black flex items-center justify-center font-heading text-xl">
+          12
+        </div>
+        <div className="flex flex-col leading-none">
+          <span className="font-heading text-2xl uppercase tracking-tight">
+            TwelveHoursCO
+          </span>
+          <span className="text-[10px] text-zinc-500 uppercase tracking-[0.3em]">
+            // Print-on-Demand // Approval Terminal
+          </span>
+        </div>
+      </Link>
+      <nav className="flex gap-2">
+        <Link
+          data-testid="nav-dashboard"
+          to="/"
+          className={`${linkBase} ${pathname === "/" ? active : inactive}`}
         >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
+          Generator
+        </Link>
+        <Link
+          data-testid="nav-history"
+          to="/history"
+          className={`${linkBase} ${pathname === "/history" ? active : inactive}`}
+        >
+          Approved Archive
+        </Link>
+      </nav>
+    </header>
   );
 };
 
 function App() {
   return (
-    <div className="App">
-      <BrowserRouter>
+    <BrowserRouter>
+      <div className="min-h-screen bg-zinc-950 text-zinc-100 font-body">
+        <NavBar />
         <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/history" element={<History />} />
         </Routes>
-      </BrowserRouter>
-    </div>
+        <Toaster
+          theme="dark"
+          position="top-right"
+          toastOptions={{
+            style: {
+              background: "#18181b",
+              border: "1px solid #3f3f46",
+              borderRadius: 0,
+              fontFamily: "IBM Plex Mono, monospace",
+              color: "#f4f4f5",
+              fontSize: "12px",
+              letterSpacing: "0.05em",
+            },
+          }}
+        />
+      </div>
+    </BrowserRouter>
   );
 }
 
