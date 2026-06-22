@@ -17,11 +17,11 @@ const NavBar = () => {
     >
       <Link to="/" className="flex items-center gap-3" data-testid="brand-logo">
         <div className="w-10 h-10 bg-white text-black flex items-center justify-center font-heading text-xl">
-          12
+          MR
         </div>
         <div className="flex flex-col leading-none">
           <span className="font-heading text-2xl uppercase tracking-tight">
-            TwelveHoursCO
+            MidnightRotation
           </span>
           <span className="text-[10px] text-zinc-500 uppercase tracking-[0.3em]">
             // Print-on-Demand // Approval Terminal

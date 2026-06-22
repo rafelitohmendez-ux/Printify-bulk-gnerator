@@ -30,7 +30,7 @@ def _client() -> httpx.AsyncClient:
         base_url=PRINTIFY_BASE_URL,
         headers={
             "Authorization": f"Bearer {_get_token()}",
-            "User-Agent": "TwelveHoursCO-Dashboard/1.0",
+            "User-Agent": "MidnightRotation-Dashboard/1.0",
             "Content-Type": "application/json;charset=utf-8",
         },
         timeout=60.0,

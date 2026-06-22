@@ -1,4 +1,4 @@
-"""TwelveHoursCO - Bulk Product Generator & Listing Approval Dashboard backend.
+"""MidnightRotation - Bulk Product Generator & Listing Approval Dashboard backend.
 
 Features:
 - Background queue worker (pre-warms 5 capsules so approve/deny is instant)
@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, ConfigDict, Field
@@ -58,6 +58,14 @@ DEFAULT_QUEUE_SIZE = 5
 DRAFT_TTL_SECONDS = 60 * 60  # 1 hour
 QUEUE_TICK_SECONDS = 2
 CLEANUP_TICK_SECONDS = 5 * 60  # 5 min
+GENERATION_TIMEOUT_SECONDS = 120
+
+SEO_TITLE_FORMULAS = [
+    "{capsule_name} - Oversized Back Print T-Shirt | Gothic Industrial Streetwear | Dark Alt Y2K Tee",
+    "{capsule_name} | Midnight Rotation Drop | Gothic Back Print Heavy Tee | Industrial Goth Streetwear",
+    "{capsule_name} Tee - Dark Alt Streetwear | Oversized Back Graphic | Industrial Gothic Y2K",
+    "{capsule_name} - Heavy Cotton Back Print Tee | MidnightRotation | Dark Streetwear | Gothic Industrial",
+]
 
 # Built-in theme pool
 DEFAULT_THEMES: List[Dict[str, str]] = [
@@ -86,7 +94,7 @@ app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-logger = logging.getLogger("twelvehours")
+logger = logging.getLogger("midnightrotation")
 
 # Concurrency: avoid hammering LLM API
 generation_lock = asyncio.Lock()
@@ -185,21 +193,22 @@ A premium, heavy-hitting alternative staple designed for the late-night rotation
 Care Instructions: Machine wash cold, inside out, with like colors. Tumble dry low or hang dry to preserve print longevity."""
 
 
-def build_text_system_prompt(banned_words: List[str]) -> str:
-    base = """You are a creative director for TwelveHoursCO, a gothic, industrial grunge, dark alternative streetwear brand. Your aesthetic is stark white ink on solid black: monolithic, religious-industrial, post-punk, occult austerity, late-night void, machinery decay, brutalist serif typography, hand-drawn ink illustration.
-
-You generate ONE shirt design capsule at a time. Return ONLY raw JSON, no prose, no code fences. Schema:
-{
-  "capsule_name": "2-3 word evocative name (e.g., 'Iron Vigil', 'Hollow Hours', 'Ash Liturgy', 'Concrete Saints')",
-  "title": "SEO product title following this exact formula: '{capsule_name} - Oversized Back Print T-Shirt | Gothic Industrial Streetwear | Dark Alt Y2K Tee'",
-  "front_concept": "STRICTLY a single, ultra-minimal MICRO-GRAPHIC for the left-chest / center-front position. Must be ONE isolated symbol or compact mark - a single sigil, a small monogram, a tiny industrial icon, a compact occult glyph, a minimal geometric mark, a single rune, a tiny seal, a clean wordmark in 1-2 letters, or a small abstract icon. Stark, clean, industrial linework only. NO scenes. NO multiple elements. NO illustrations of objects or figures. ONE symbol on a void. Keep under 15 words.",
-  "back_concept": "One sentence describing a large oversized back graphic that fills the back: detailed, monolithic gothic/industrial imagery. Keep under 25 words.",
-  "tags": ["array of EXACTLY 13 SEO tags - MUST include 'Gothic Streetwear' and 'Back Print Shirt'; remaining 11 are unique tags specific to this design's theme/imagery"]
-}
-
-For front_concept specifically: think 'a tiny ink stamp', 'a watch-dial-sized mark', 'a single hand-pulled glyph'. NEVER a full illustration. NEVER multiple visual elements. The front is a whisper; the back is a scream.
-
-For back_concept: be SPECIFIC, dense, monolithic. Reference texture, action, decay, religious or industrial machinery."""
+def build_text_system_prompt(banned_words: List[str], title_formula: str) -> str:
+    base = (
+        "You are a creative director for MidnightRotation, a gothic, industrial grunge, dark alternative streetwear brand. "
+        "Your aesthetic is stark white ink on solid black: monolithic, religious-industrial, post-punk, occult austerity, "
+        "late-night void, machinery decay, brutalist serif typography, hand-drawn ink illustration.\n\n"
+        "You generate ONE shirt design capsule at a time. Return ONLY raw JSON, no prose, no code fences. Schema:\n"
+        "{\n"
+        "  \"capsule_name\": \"2-3 word evocative name (e.g., 'Iron Vigil', 'Hollow Hours', 'Ash Liturgy', 'Concrete Saints')\",\n"
+        f"  \"title\": \"SEO product title following this exact formula: '{title_formula}'\",\n"
+        "  \"front_concept\": \"STRICTLY a single, ultra-minimal MICRO-GRAPHIC for the left-chest / center-front position. Must be ONE isolated symbol or compact mark - a single sigil, a small monogram, a tiny industrial icon, a compact occult glyph, a minimal geometric mark, a single rune, a tiny seal, a clean wordmark in 1-2 letters, or a small abstract icon. Stark, clean, industrial linework only. NO scenes. NO multiple elements. NO illustrations of objects or figures. ONE symbol on a void. Keep under 15 words.\",\n"
+        "  \"back_concept\": \"One sentence describing a large oversized back graphic that fills the back: detailed, monolithic gothic/industrial imagery. Keep under 25 words.\",\n"
+        "  \"tags\": [\"array of EXACTLY 13 SEO tags - MUST include 'Gothic Streetwear' and 'Back Print Shirt'; remaining 11 are unique tags specific to this design's theme/imagery\"]\n"
+        "}\n\n"
+        "For front_concept specifically: think 'a tiny ink stamp', 'a watch-dial-sized mark', 'a single hand-pulled glyph'. NEVER a full illustration. NEVER multiple visual elements. The front is a whisper; the back is a scream.\n\n"
+        "For back_concept: be SPECIFIC, dense, monolithic. Reference texture, action, decay, religious or industrial machinery."
+    )
     if banned_words:
         joined = ", ".join(f"'{w}'" for w in banned_words)
         base += f"\n\nABSOLUTELY DO NOT use any of these banned words or their close variants anywhere in the output: {joined}. If you would normally use them, substitute with a different, vivid alternative."
@@ -238,11 +247,12 @@ def resolve_theme(settings: dict) -> dict:
 # AI generation
 # -----------------------------
 async def llm_generate_text(theme_prompt: str, banned_words: List[str]) -> dict:
+    title_formula = random.choice(SEO_TITLE_FORMULAS)
     session_id = f"capsule-{uuid.uuid4()}"
     chat = LlmChat(
         api_key=EMERGENT_LLM_KEY,
         session_id=session_id,
-        system_message=build_text_system_prompt(banned_words),
+        system_message=build_text_system_prompt(banned_words, title_formula),
     ).with_model("gemini", "gemini-3-flash-preview")
 
     ban_hint = ""
@@ -325,7 +335,7 @@ async def _generate_capsule(settings: dict) -> Capsule:
         capsule_name=capsule_name,
         title=text_data.get(
             "title",
-            f"{capsule_name} - Oversized Back Print T-Shirt | Gothic Industrial Streetwear | Dark Alt Y2K Tee",
+            random.choice(SEO_TITLE_FORMULAS).format(capsule_name=capsule_name),
         ),
         description=description,
         front_concept=front_concept,
@@ -363,7 +373,10 @@ async def queue_worker():
                     pool = await capsules_coll.count_documents({"status": "draft", "consumed": False})
                     if pool < target:
                         try:
-                            cap = await _generate_capsule(settings)
+                            cap = await asyncio.wait_for(
+                                _generate_capsule(settings),
+                                timeout=GENERATION_TIMEOUT_SECONDS,
+                            )
                             await capsules_coll.insert_one(cap.model_dump())
                             logger.info(f"Pre-warmed capsule '{cap.capsule_name}' (pool now {pool + 1}/{target})")
                         except Exception:
@@ -401,7 +414,7 @@ async def cleanup_worker():
 # -----------------------------
 @api_router.get("/")
 async def root():
-    return {"service": "TwelveHoursCO", "status": "online"}
+    return {"service": "MidnightRotation", "status": "online"}
 
 
 @api_router.get("/capsules/next", response_model=Capsule)
@@ -419,7 +432,10 @@ async def next_capsule():
     # Queue empty: generate synchronously
     settings = await get_settings()
     async with generation_lock:
-        cap = await _generate_and_store(settings, mark_consumed=True)
+        cap = await asyncio.wait_for(
+            _generate_and_store(settings, mark_consumed=True),
+            timeout=GENERATION_TIMEOUT_SECONDS,
+        )
     return cap
 
 
@@ -429,7 +445,10 @@ async def generate_capsule_now():
     settings = await get_settings()
     try:
         async with generation_lock:
-            cap = await _generate_and_store(settings, mark_consumed=True)
+            cap = await asyncio.wait_for(
+                _generate_and_store(settings, mark_consumed=True),
+                timeout=GENERATION_TIMEOUT_SECONDS,
+            )
         return cap
     except Exception as e:
         logger.exception("force generate failed")
@@ -562,7 +581,7 @@ async def get_capsule_image(capsule_id: str, side: str):
 
 
 @api_router.get("/capsules/export.csv")
-async def export_csv():
+async def export_csv(request: Request):
     docs = await capsules_coll.find(
         {"status": "approved"},
         {"_id": 0, "front_image_b64": 0, "back_image_b64": 0},
@@ -574,7 +593,7 @@ async def export_csv():
         "front_concept", "back_concept", "theme_seed", "approved_at",
         "front_image_url", "back_image_url",
     ])
-    base_url = "/api/capsules"
+    base_url = str(request.base_url).rstrip("/") + "/api/capsules"
     for d in docs:
         writer.writerow([
             d.get("id", ""),
@@ -593,7 +612,7 @@ async def export_csv():
     return StreamingResponse(
         iter([buf.getvalue()]),
         media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=twelvehoursco_approved.csv"},
+        headers={"Content-Disposition": "attachment; filename=midnightrotation_approved.csv"},
     )
 
 
