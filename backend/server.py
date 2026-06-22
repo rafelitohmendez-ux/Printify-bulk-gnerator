@@ -29,7 +29,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.cors import CORSMiddleware
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from google import genai
+from google.genai import types
 
 from printify_client import (
     GILDAN_5000_BLUEPRINT_ID,
@@ -45,7 +46,8 @@ load_dotenv(ROOT_DIR / ".env")
 # Environment
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
-EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+genai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Mongo
 client = AsyncIOMotorClient(MONGO_URL)
@@ -248,21 +250,18 @@ def resolve_theme(settings: dict) -> dict:
 # -----------------------------
 async def llm_generate_text(theme_prompt: str, banned_words: List[str]) -> dict:
     title_formula = random.choice(SEO_TITLE_FORMULAS)
-    session_id = f"capsule-{uuid.uuid4()}"
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=session_id,
-        system_message=build_text_system_prompt(banned_words, title_formula),
-    ).with_model("gemini", "gemini-3-flash-preview")
-
+    system_prompt = build_text_system_prompt(banned_words, title_formula)
     ban_hint = ""
     if banned_words:
         ban_hint = f" Avoid words: {', '.join(banned_words)}."
-    msg = UserMessage(
-        text=f"Generate one design capsule. Lean into this seed theme: '{theme_prompt}'.{ban_hint} Return only JSON."
+    prompt_text = f"Generate one design capsule. Lean into this seed theme: '{theme_prompt}'.{ban_hint} Return only JSON."
+    response = await asyncio.to_thread(
+        genai_client.models.generate_content,
+        model="gemini-2.5-flash",
+        contents=prompt_text,
+        config=types.GenerateContentConfig(system_instruction=system_prompt),
     )
-    raw = await chat.send_message(msg)
-    text = raw if isinstance(raw, str) else str(raw)
+    text = response.text or ""
     cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.MULTILINE).strip()
     match = re.search(r"\{.*\}", cleaned, re.DOTALL)
     if not match:
@@ -278,17 +277,18 @@ async def llm_generate_text(theme_prompt: str, banned_words: List[str]) -> dict:
 
 
 async def llm_generate_image(prompt: str) -> Optional[str]:
-    session_id = f"img-{uuid.uuid4()}"
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=session_id,
-        system_message="You are an expert graphic designer producing stark white-ink-on-black gothic streetwear print graphics.",
-    ).with_model("gemini", "gemini-3.1-flash-image-preview").with_params(modalities=["image", "text"])
-    msg = UserMessage(text=prompt)
-    _text, images = await chat.send_message_multimodal_response(msg)
-    if not images:
+    STYLE_PREFIX = "You are an expert graphic designer producing stark white-ink-on-black gothic streetwear print graphics. "
+    response = await asyncio.to_thread(
+        genai_client.models.generate_content,
+        model="gemini-3.1-flash-image",
+        contents=STYLE_PREFIX + prompt,
+    )
+    if not response.candidates:
         return None
-    return images[0]["data"]
+    for part in response.candidates[0].content.parts:
+        if getattr(part, "inline_data", None) and part.inline_data.data:
+            return base64.b64encode(part.inline_data.data).decode("utf-8")
+    return None
 
 
 def build_front_prompt(front_concept: str) -> str:
