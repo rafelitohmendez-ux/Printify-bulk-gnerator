@@ -280,7 +280,7 @@ async def llm_generate_image(prompt: str) -> Optional[str]:
     STYLE_PREFIX = "You are an expert graphic designer producing stark white-ink-on-black gothic streetwear print graphics. "
     response = await asyncio.to_thread(
         genai_client.models.generate_content,
-        model="gemini-3.1-flash-image",
+        model="gemini-2.5-flash-image",
         contents=STYLE_PREFIX + prompt,
     )
     if not response.candidates:
