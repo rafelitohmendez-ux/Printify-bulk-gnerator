@@ -257,7 +257,7 @@ async def llm_generate_text(theme_prompt: str, banned_words: List[str]) -> dict:
     prompt_text = f"Generate one design capsule. Lean into this seed theme: '{theme_prompt}'.{ban_hint} Return only JSON."
     response = await asyncio.to_thread(
         genai_client.models.generate_content,
-        model="gemini-2.5-flash",
+        model="gemini-2.5-flash-lite",
         contents=prompt_text,
         config=types.GenerateContentConfig(system_instruction=system_prompt),
     )
