@@ -747,7 +747,7 @@ async def on_startup():
     # Reset stale consumed=true drafts that were never approved/denied (e.g. server restart mid-review)
     # If they're old, cleanup_worker handles them. If young, leave them - user will see them again
     # by re-requesting /next. Simpler: just relaunch workers.
-    _worker_task = asyncio.create_task(queue_worker())
+    # _worker_task = asyncio.create_task(queue_worker())  # disabled: /next generates on-demand
     _cleanup_task = asyncio.create_task(cleanup_worker())
 
 
