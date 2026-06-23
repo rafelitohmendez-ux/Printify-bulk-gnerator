@@ -381,7 +381,8 @@ async def queue_worker():
                             logger.info(f"Pre-warmed capsule '{cap.capsule_name}' (pool now {pool + 1}/{target})")
                         except Exception:
                             logger.exception("queue worker generation failed")
-                            await asyncio.sleep(15)  # back off on error
+                            await asyncio.sleep(60)  # back off on quota/error
+                            continue
             await asyncio.sleep(QUEUE_TICK_SECONDS)
         except asyncio.CancelledError:
             logger.info("Queue worker cancelled")
