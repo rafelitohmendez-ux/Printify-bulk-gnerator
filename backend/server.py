@@ -278,11 +278,15 @@ async def llm_generate_text(theme_prompt: str, banned_words: List[str]) -> dict:
 
 async def llm_generate_image(prompt: str) -> Optional[str]:
     STYLE_PREFIX = "You are an expert graphic designer producing stark white-ink-on-black gothic streetwear print graphics. "
-    response = await asyncio.to_thread(
-        genai_client.models.generate_content,
-        model="gemini-2.5-flash-image",
-        contents=STYLE_PREFIX + prompt,
-    )
+    try:
+        response = await asyncio.to_thread(
+            genai_client.models.generate_content,
+            model="gemini-2.5-flash-image",
+            contents=STYLE_PREFIX + prompt,
+        )
+    except Exception as exc:
+        logger.warning("Image generation failed, skipping: %s", exc)
+        return None
     if not response.candidates:
         return None
     for part in response.candidates[0].content.parts:
