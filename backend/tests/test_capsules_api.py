@@ -1,4 +1,4 @@
-"""End-to-end backend tests for TwelveHoursCO capsule API.
+"""End-to-end backend tests for MidnightRotation capsule API.
 
 Covers: generate (AI call, ~20-60s), approve, deny, approved list, stats, image, CSV export.
 """
@@ -7,14 +7,18 @@ import re
 import pytest
 import requests
 
-BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/") if os.environ.get("REACT_APP_BACKEND_URL") else "https://approve-grind.preview.emergentagent.com"
+BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/") if os.environ.get("REACT_APP_BACKEND_URL") else "https://printify-bulk-gnerator.onrender.com"
 API = f"{BASE_URL}/api"
+ADMIN_KEY = os.environ.get("ADMIN_API_KEY", "")
 
 
 @pytest.fixture(scope="module")
 def session():
     s = requests.Session()
-    s.headers.update({"Content-Type": "application/json"})
+    s.headers.update({
+        "Content-Type": "application/json",
+        "X-Admin-Key": ADMIN_KEY,
+    })
     return s
 
 
@@ -24,7 +28,7 @@ class TestHealth:
         r = session.get(f"{API}/")
         assert r.status_code == 200
         data = r.json()
-        assert data["service"] == "TwelveHoursCO"
+        assert data["service"] == "MidnightRotation"
         assert data["status"] == "online"
 
     def test_stats_shape(self, session):
@@ -171,7 +175,7 @@ class TestExportCSV:
         assert "text/csv" in ct
         cd = r.headers.get("Content-Disposition", "")
         assert "attachment" in cd
-        assert "twelvehoursco_approved.csv" in cd
+        assert "midnightrotation_approved.csv" in cd
         # header row + at least one approved capsule
         body = r.text
         assert "capsule_name" in body

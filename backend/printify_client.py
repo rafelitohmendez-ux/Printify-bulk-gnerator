@@ -13,6 +13,8 @@ PRINTIFY_BASE_URL = "https://api.printify.com/v1"
 # Blueprint ID 6 = Gildan 5000 "Unisex Heavy Cotton Tee" on Printify catalog
 GILDAN_5000_BLUEPRINT_ID = 6
 
+DEFAULT_VARIANT_PRICE_CENTS = 4499  # $44.99
+
 
 class PrintifyError(Exception):
     pass
@@ -135,6 +137,43 @@ async def prioritize_front_mockup(shop_id: int, product_id: str) -> Optional[str
     return chosen_src
 
 
+def _pick_back_mockup(images: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """From a product's image list, pick the best back-view mockup."""
+    backs = [img for img in images if (img.get("position") or "").lower() == "back"]
+    if not backs:
+        return None
+    for keyword in ("flat", "full", "lifestyle"):
+        for img in backs:
+            if keyword in (img.get("src") or "").lower():
+                return img
+    return backs[0]
+
+
+async def prioritize_back_mockup(shop_id: int, product_id: str) -> Optional[str]:
+    """Mark a back-view mockup as default + selected for publishing.
+    Returns src of chosen image, or None if no update made."""
+    product = await get_product(shop_id, product_id)
+    images = product.get("images") or []
+    if not images:
+        return None
+    chosen = _pick_back_mockup(images)
+    if not chosen:
+        return None
+    chosen_src = chosen.get("src")
+    updated = []
+    for img in images:
+        is_chosen = img.get("src") == chosen_src
+        updated.append({
+            "src": img.get("src"),
+            "variant_ids": img.get("variant_ids", []),
+            "position": img.get("position"),
+            "is_default": is_chosen,
+            "is_selected_for_publishing": is_chosen or bool(img.get("is_selected_for_publishing")),
+        })
+    await update_product(shop_id, product_id, {"images": updated})
+    return chosen_src
+
+
 def _pick_black_variants(variants_payload: Dict[str, Any], max_variants: int = 8) -> List[int]:
     """From a variants response, return variant IDs whose color is black."""
     variants = variants_payload.get("variants") or []
@@ -175,15 +214,15 @@ async def push_capsule_as_draft(
     variants_payload = await list_variants(GILDAN_5000_BLUEPRINT_ID, print_provider_id, show_out_of_stock=0)
     variant_ids = _pick_black_variants(variants_payload)
     if not variant_ids:
-        # Fallback: just use first 5 variants of any color
-        variant_ids = [int(v["id"]) for v in (variants_payload.get("variants") or [])[:5]]
-    if not variant_ids:
-        raise PrintifyError("No variants available for this blueprint/provider combination")
+        raise PrintifyError(
+            f"No black variants found for blueprint {GILDAN_5000_BLUEPRINT_ID} / "
+            f"provider {print_provider_id}. Verify this provider carries black Gildan 5000."
+        )
 
     # 3. Construct product payload with front (left-chest) + back placements
     # Standard Printify positions for apparel: "front" and "back".
     variants_array = [
-        {"id": vid, "price": 3200, "is_enabled": True}  # $32.00
+        {"id": vid, "price": DEFAULT_VARIANT_PRICE_CENTS, "is_enabled": True}
         for vid in variant_ids
     ]
     print_areas = [
@@ -232,13 +271,13 @@ async def push_capsule_as_draft(
     # publish in Printify or via a separate endpoint).
     product = await create_product(shop_id, product_payload)
 
-    # 5. Promote a front-view mockup as default so the small left-chest design is
-    # immediately visible in the Printify dashboard + on the storefront thumbnail.
+    # 5. Promote a back-view mockup as default so the oversized back graphic is the
+    # storefront thumbnail — it's the main visual statement of the design.
     pid = product.get("id")
     if pid:
         try:
-            await prioritize_front_mockup(shop_id, str(pid))
+            await prioritize_back_mockup(shop_id, str(pid))
         except Exception:
-            logger.warning("prioritize_front_mockup failed (non-fatal)", exc_info=True)
+            logger.warning("prioritize_back_mockup failed (non-fatal)", exc_info=True)
 
     return product

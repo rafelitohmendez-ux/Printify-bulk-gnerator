@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, ConfigDict, Field
@@ -48,6 +48,19 @@ MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 genai_client = genai.Client(api_key=GEMINI_API_KEY)
+
+ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "")
+if not ADMIN_API_KEY:
+    raise RuntimeError("ADMIN_API_KEY env var is required. Set it to a strong random secret.")
+
+_cors_raw = os.environ.get("CORS_ORIGINS", "")
+if not _cors_raw.strip():
+    raise RuntimeError(
+        "CORS_ORIGINS env var is required. "
+        "Set it to a comma-separated list of allowed origins, "
+        "e.g. 'https://yourapp.vercel.app,http://localhost:3000'"
+    )
+CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()]
 
 # Mongo
 client = AsyncIOMotorClient(MONGO_URL)
@@ -162,6 +175,8 @@ class SettingsDoc(BaseModel):
     printify_shop_id: Optional[int] = None
     printify_print_provider_id: Optional[int] = None
     printify_auto_push: bool = False
+    # Anti-repetition state (internal, not user-configurable)
+    recently_used_themes: List[str] = Field(default_factory=list)
 
 
 class SettingsUpdate(BaseModel):
@@ -195,7 +210,7 @@ A premium, heavy-hitting alternative staple designed for the late-night rotation
 Care Instructions: Machine wash cold, inside out, with like colors. Tumble dry low or hang dry to preserve print longevity."""
 
 
-def build_text_system_prompt(banned_words: List[str], title_formula: str) -> str:
+def build_text_system_prompt(banned_words: List[str], title_formula: str, banned_names: Optional[List[str]] = None) -> str:
     base = (
         "You are a creative director for MidnightRotation, a gothic, industrial grunge, dark alternative streetwear brand. "
         "Your aesthetic is stark white ink on solid black: monolithic, religious-industrial, post-punk, occult austerity, "
@@ -214,6 +229,9 @@ def build_text_system_prompt(banned_words: List[str], title_formula: str) -> str
     if banned_words:
         joined = ", ".join(f"'{w}'" for w in banned_words)
         base += f"\n\nABSOLUTELY DO NOT use any of these banned words or their close variants anywhere in the output: {joined}. If you would normally use them, substitute with a different, vivid alternative."
+    if banned_names:
+        joined_names = ", ".join(f'"{n}"' for n in banned_names[:15])
+        base += f"\n\nDO NOT reuse any of these recently-generated capsule names: {joined_names}. The capsule_name you return must be completely distinct from all of these."
     return base
 
 
@@ -230,27 +248,32 @@ async def get_settings() -> dict:
 
 
 def resolve_theme(settings: dict) -> dict:
-    """Return chosen theme {key/name, prompt} based on settings."""
+    """Return chosen theme {key/name, prompt} based on settings, avoiding recent repeats in auto mode."""
     active = (settings.get("active_theme") or "auto").strip()
     customs = settings.get("custom_themes") or []
+    recently_used = set(settings.get("recently_used_themes") or [])
     all_themes = DEFAULT_THEMES + [
         {"key": f"custom:{t['name']}", "name": t["name"], "prompt": t["prompt"]}
         for t in customs
     ]
-    if active == "auto" or not active:
-        return random.choice(all_themes) if all_themes else {"key": "auto", "name": "auto", "prompt": "gothic industrial streetwear"}
-    for t in all_themes:
-        if t["key"] == active or t["name"].lower() == active.lower():
-            return t
-    return random.choice(all_themes) if all_themes else {"key": "auto", "name": "auto", "prompt": "gothic industrial streetwear"}
+    fallback = {"key": "auto", "name": "auto", "prompt": "gothic industrial streetwear"}
+    if not all_themes:
+        return fallback
+    if active != "auto" and active:
+        for t in all_themes:
+            if t["key"] == active or t["name"].lower() == active.lower():
+                return t
+    # auto mode: prefer themes not recently used; fall back to full pool only when all exhausted
+    fresh = [t for t in all_themes if t["key"] not in recently_used]
+    return random.choice(fresh if fresh else all_themes)
 
 
 # -----------------------------
 # AI generation
 # -----------------------------
-async def llm_generate_text(theme_prompt: str, banned_words: List[str]) -> dict:
+async def llm_generate_text(theme_prompt: str, banned_words: List[str], banned_names: Optional[List[str]] = None) -> dict:
     title_formula = random.choice(SEO_TITLE_FORMULAS)
-    system_prompt = build_text_system_prompt(banned_words, title_formula)
+    system_prompt = build_text_system_prompt(banned_words, title_formula, banned_names)
     ban_hint = ""
     if banned_words:
         ban_hint = f" Avoid words: {', '.join(banned_words)}."
@@ -323,7 +346,26 @@ def build_back_prompt(back_concept: str) -> str:
 
 async def _generate_capsule(settings: dict) -> Capsule:
     theme = resolve_theme(settings)
-    text_data = await llm_generate_text(theme["prompt"], settings.get("banned_words") or [])
+
+    # Record theme usage so resolve_theme() can avoid it next time
+    recent_themes = list(settings.get("recently_used_themes") or [])
+    if theme["key"] not in recent_themes:
+        recent_themes.append(theme["key"])
+    keep = max(len(DEFAULT_THEMES) // 2, 5)
+    await settings_coll.update_one(
+        {"id": "config"},
+        {"$set": {"recently_used_themes": recent_themes[-keep:]}},
+        upsert=True,
+    )
+
+    # Fetch recent capsule names to steer Gemini away from name collisions
+    recent_docs = await capsules_coll.find(
+        {"capsule_name": {"$exists": True}},
+        {"capsule_name": 1, "_id": 0},
+    ).sort("created_at", -1).limit(15).to_list(15)
+    recent_names = [d["capsule_name"] for d in recent_docs if d.get("capsule_name")]
+
+    text_data = await llm_generate_text(theme["prompt"], settings.get("banned_words") or [], banned_names=recent_names)
     capsule_name = text_data.get("capsule_name", "Unnamed Capsule")
     front_concept = text_data.get("front_concept", "")
     back_concept = text_data.get("back_concept", "")
@@ -415,6 +457,14 @@ async def cleanup_worker():
 
 
 # -----------------------------
+# Auth dependency
+# -----------------------------
+async def require_admin_key(x_admin_key: Optional[str] = Header(default=None)) -> None:
+    if x_admin_key != ADMIN_API_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+# -----------------------------
 # Endpoints
 # -----------------------------
 @api_router.get("/")
@@ -468,7 +518,7 @@ async def queue_status():
 
 
 @api_router.post("/capsules/{capsule_id}/approve", response_model=CapsulePublic)
-async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = None):
+async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = None, _: None = Depends(require_admin_key)):
     update: Dict = {"status": "approved", "approved_at": now_iso()}
     if payload:
         if payload.title is not None:
@@ -523,7 +573,7 @@ async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = N
 
 
 @api_router.post("/capsules/{capsule_id}/deny")
-async def deny_capsule(capsule_id: str):
+async def deny_capsule(capsule_id: str, _: None = Depends(require_admin_key)):
     result = await capsules_coll.delete_one({"id": capsule_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Capsule not found")
@@ -641,7 +691,7 @@ async def get_settings_endpoint():
 
 
 @api_router.put("/settings")
-async def update_settings(payload: SettingsUpdate):
+async def update_settings(payload: SettingsUpdate, _: None = Depends(require_admin_key)):
     update: Dict = {}
     flush_queue = False
     if payload.active_theme is not None:
@@ -693,7 +743,7 @@ async def printify_print_providers():
 
 
 @api_router.post("/capsules/{capsule_id}/push-printify")
-async def manual_push(capsule_id: str):
+async def manual_push(capsule_id: str, _: None = Depends(require_admin_key)):
     """Manual on-demand push of an already-approved capsule."""
     settings = await get_settings()
     if not settings.get("printify_shop_id") or not settings.get("printify_print_provider_id"):
@@ -739,7 +789,7 @@ app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
