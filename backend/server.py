@@ -27,6 +27,9 @@ from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, ConfigDict, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from starlette.middleware.cors import CORSMiddleware
 
 from google import genai
@@ -80,7 +83,36 @@ SEO_TITLE_FORMULAS = [
     "{capsule_name} | Midnight Rotation Drop | Gothic Back Print Heavy Tee | Industrial Goth Streetwear",
     "{capsule_name} Tee - Dark Alt Streetwear | Oversized Back Graphic | Industrial Gothic Y2K",
     "{capsule_name} - Heavy Cotton Back Print Tee | MidnightRotation | Dark Streetwear | Gothic Industrial",
+    "{capsule_name} | {theme_hint} Tee | Oversized Back Print | Dark Academia Streetwear Gift",
+    "{capsule_name} Shirt - {theme_hint} Graphic Tee | Gothic Streetwear | Unisex Heavy Cotton",
+    "{capsule_name} | Alt Streetwear Tee | {theme_hint} Back Print | Y2K Grunge Gothic Shirt",
+    "{capsule_name} - {theme_hint} Tee | Midnight Rotation | Oversized Streetwear | Goth Gift Idea",
+    "{capsule_name} Tee | Dark {theme_hint} Graphic | Industrial Streetwear | Back Print Heavy Cotton",
+    "{capsule_name} - {theme_hint} Oversized Tee | Gothic Industrial | Dark Alt Streetwear Shirt",
 ]
+
+# Words pulled from the theme prompt to slot into {theme_hint} so titles
+# differentiate by actual design content instead of repeating a fixed phrase.
+THEME_HINT_OVERRIDES = {
+    "religious_industrial": "Religious Industrial",
+    "post_punk_machinery": "Post-Punk",
+    "occult_austerity": "Occult",
+    "brutalist_cathedral": "Brutalist Cathedral",
+    "rusted_shrine": "Rusted Shrine",
+    "hydraulic_crucifixion": "Hydraulic",
+    "monastic_factory": "Monastic",
+    "iron_prayer": "Iron Liturgy",
+    "late_night_void": "Late-Night Void",
+    "y2k_gothic": "Y2K Gothic",
+    "techno_gothic": "Techno Gothic",
+    "abandoned_chapel": "Abandoned Chapel",
+    "concrete_saints": "Concrete Saint",
+    "ash_liturgy": "Ash Liturgy",
+    "neon_mortuary": "Neon Mortuary",
+    "wire_crown": "Wire Crown",
+    "graveyard_assembly": "Graveyard",
+    "post_mortem_mechanics": "Post-Mortem",
+}
 
 # Built-in theme pool
 DEFAULT_THEMES: List[Dict[str, str]] = [
@@ -107,6 +139,7 @@ DEFAULT_THEMES: List[Dict[str, str]] = [
 # App + router
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
+limiter = Limiter(key_func=get_remote_address)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("midnightrotation")
@@ -115,6 +148,8 @@ logger = logging.getLogger("midnightrotation")
 generation_lock = asyncio.Lock()
 _worker_task: Optional[asyncio.Task] = None
 _cleanup_task: Optional[asyncio.Task] = None
+_last_admin_activity: Optional[datetime] = None
+ADMIN_IDLE_TIMEOUT_SECONDS = 600  # 10 minutes of no admin requests = considered idle
 
 
 # -----------------------------
@@ -221,7 +256,15 @@ def build_text_system_prompt(banned_words: List[str], title_formula: str, banned
         f"  \"title\": \"SEO product title following this exact formula: '{title_formula}'\",\n"
         "  \"front_concept\": \"STRICTLY a single, ultra-minimal MICRO-GRAPHIC for the left-chest / center-front position. Must be ONE isolated symbol or compact mark - a single sigil, a small monogram, a tiny industrial icon, a compact occult glyph, a minimal geometric mark, a single rune, a tiny seal, a clean wordmark in 1-2 letters, or a small abstract icon. Stark, clean, industrial linework only. NO scenes. NO multiple elements. NO illustrations of objects or figures. ONE symbol on a void. Keep under 15 words.\",\n"
         "  \"back_concept\": \"One sentence describing a large oversized back graphic that fills the back: detailed, monolithic gothic/industrial imagery. Keep under 25 words.\",\n"
-        "  \"tags\": [\"array of EXACTLY 13 SEO tags - MUST include 'Gothic Streetwear' and 'Back Print Shirt'; remaining 11 are unique tags specific to this design's theme/imagery\"]\n"
+        "  \"tags\": [\"array of EXACTLY 13 SEO tags composed as follows: "
+        "(1) MUST include 'Gothic Streetwear' and 'Back Print Shirt'. "
+        "(2) At least 2 gift/occasion tags tailored to this specific design — vary the phrasing naturally per capsule "
+        "(e.g. 'Gift For Goth', 'Alt Streetwear Gift', 'Unique Tee Gift Idea', 'Gift For Him Alternative', "
+        "'Gothic Gift For Her', 'Dark Aesthetic Gift'). "
+        "(3) At least 2 broad umbrella aesthetic tags that capture high-volume searches beyond this design's specific theme "
+        "(e.g. 'Dark Academia Tshirt', 'Grunge Shirt', 'Alt Clothing', 'Unisex Streetwear', 'Alternative Fashion', 'Indie Goth Tee'). "
+        "(4) The remaining 7 tags must be specific to this design's theme, imagery, and mood. "
+        "All 13 must read as natural, on-brand Etsy search terms — never generic or repetitive across capsules.\"]\n"
         "}\n\n"
         "For front_concept specifically: think 'a tiny ink stamp', 'a watch-dial-sized mark', 'a single hand-pulled glyph'. NEVER a full illustration. NEVER multiple visual elements. The front is a whisper; the back is a scream.\n\n"
         "For back_concept: be SPECIFIC, dense, monolithic. Reference texture, action, decay, religious or industrial machinery."
@@ -271,8 +314,12 @@ def resolve_theme(settings: dict) -> dict:
 # -----------------------------
 # AI generation
 # -----------------------------
-async def llm_generate_text(theme_prompt: str, banned_words: List[str], banned_names: Optional[List[str]] = None) -> dict:
-    title_formula = random.choice(SEO_TITLE_FORMULAS)
+async def llm_generate_text(theme_prompt: str, banned_words: List[str], banned_names: Optional[List[str]] = None, theme_key: Optional[str] = None) -> dict:
+    raw_formula = random.choice(SEO_TITLE_FORMULAS)
+    theme_hint = THEME_HINT_OVERRIDES.get(theme_key or "", "Industrial Gothic")
+    # Bake theme_hint in now so titles differentiate by actual theme content;
+    # {capsule_name} is left as a literal placeholder for the LLM to fill in.
+    title_formula = raw_formula.replace("{theme_hint}", theme_hint)
     system_prompt = build_text_system_prompt(banned_words, title_formula, banned_names)
     ban_hint = ""
     if banned_words:
@@ -306,9 +353,12 @@ async def llm_generate_image(prompt: str) -> Optional[str]:
             genai_client.models.generate_content,
             model="gemini-2.5-flash-image",
             contents=STYLE_PREFIX + prompt,
+            config=types.GenerateContentConfig(
+                response_modalities=["IMAGE"],
+            ),
         )
     except Exception as exc:
-        logger.warning("Image generation failed, skipping: %s", exc)
+        logger.exception("Image generation failed, skipping: %s", exc)
         return None
     if not response.candidates:
         return None
@@ -365,7 +415,12 @@ async def _generate_capsule(settings: dict) -> Capsule:
     ).sort("created_at", -1).limit(15).to_list(15)
     recent_names = [d["capsule_name"] for d in recent_docs if d.get("capsule_name")]
 
-    text_data = await llm_generate_text(theme["prompt"], settings.get("banned_words") or [], banned_names=recent_names)
+    text_data = await llm_generate_text(
+        theme["prompt"],
+        settings.get("banned_words") or [],
+        banned_names=recent_names,
+        theme_key=theme.get("key"),
+    )
     capsule_name = text_data.get("capsule_name", "Unnamed Capsule")
     front_concept = text_data.get("front_concept", "")
     back_concept = text_data.get("back_concept", "")
@@ -377,11 +432,11 @@ async def _generate_capsule(settings: dict) -> Capsule:
         capsule_name=capsule_name.upper(),
         back_graphic=back_concept.rstrip(".").lower(),
     )
+    fallback_hint = THEME_HINT_OVERRIDES.get(theme.get("key") or "", "Industrial Gothic")
     return Capsule(
         capsule_name=capsule_name,
-        title=text_data.get(
-            "title",
-            random.choice(SEO_TITLE_FORMULAS).format(capsule_name=capsule_name),
+        title=text_data.get("title") or random.choice(SEO_TITLE_FORMULAS).format(
+            capsule_name=capsule_name, theme_hint=fallback_hint
         ),
         description=description,
         front_concept=front_concept,
@@ -411,6 +466,9 @@ async def queue_worker():
     logger.info("Queue worker started")
     while True:
         try:
+            if not admin_is_active():
+                await asyncio.sleep(QUEUE_TICK_SECONDS)
+                continue
             settings = await get_settings()
             target = int(settings.get("queue_size") or DEFAULT_QUEUE_SIZE)
             pool = await capsules_coll.count_documents({"status": "draft", "consumed": False})
@@ -459,9 +517,18 @@ async def cleanup_worker():
 # -----------------------------
 # Auth dependency
 # -----------------------------
+def admin_is_active() -> bool:
+    if _last_admin_activity is None:
+        return False
+    elapsed = (datetime.now(timezone.utc) - _last_admin_activity).total_seconds()
+    return elapsed < ADMIN_IDLE_TIMEOUT_SECONDS
+
+
 async def require_admin_key(x_admin_key: Optional[str] = Header(default=None)) -> None:
     if x_admin_key != ADMIN_API_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    global _last_admin_activity
+    _last_admin_activity = datetime.now(timezone.utc)
 
 
 # -----------------------------
@@ -473,7 +540,7 @@ async def root():
 
 
 @api_router.get("/capsules/next", response_model=Capsule)
-async def next_capsule():
+async def next_capsule(_: None = Depends(require_admin_key)):
     """Pop the next pre-warmed draft, or generate one synchronously if queue is empty."""
     doc = await capsules_coll.find_one_and_update(
         {"status": "draft", "consumed": False},
@@ -495,7 +562,8 @@ async def next_capsule():
 
 
 @api_router.post("/capsules/generate", response_model=Capsule)
-async def generate_capsule_now():
+@limiter.limit("10/hour")
+async def generate_capsule_now(request: Request, _: None = Depends(require_admin_key)):
     """Force-generate a fresh capsule synchronously (consumed)."""
     settings = await get_settings()
     try:
@@ -514,7 +582,11 @@ async def generate_capsule_now():
 async def queue_status():
     pool = await capsules_coll.count_documents({"status": "draft", "consumed": False})
     settings = await get_settings()
-    return {"depth": pool, "target": int(settings.get("queue_size") or DEFAULT_QUEUE_SIZE)}
+    return {
+        "depth": pool,
+        "target": int(settings.get("queue_size") or DEFAULT_QUEUE_SIZE),
+        "worker_active": admin_is_active(),
+    }
 
 
 @api_router.post("/capsules/{capsule_id}/approve", response_model=CapsulePublic)
@@ -581,7 +653,8 @@ async def deny_capsule(capsule_id: str, _: None = Depends(require_admin_key)):
 
 
 @api_router.post("/capsules/{capsule_id}/regenerate-image/{side}", response_model=Capsule)
-async def regenerate_image(capsule_id: str, side: str):
+@limiter.limit("10/hour")
+async def regenerate_image(request: Request, capsule_id: str, side: str, _: None = Depends(require_admin_key)):
     if side not in ("front", "back"):
         raise HTTPException(status_code=400, detail="side must be 'front' or 'back'")
     doc = await capsules_coll.find_one({"id": capsule_id})
@@ -725,7 +798,7 @@ async def update_settings(payload: SettingsUpdate, _: None = Depends(require_adm
 # Printify endpoints
 # -----------------------------
 @api_router.get("/printify/shops")
-async def printify_shops():
+async def printify_shops(_: None = Depends(require_admin_key)):
     try:
         shops = await list_shops()
         return {"shops": shops}
@@ -734,7 +807,7 @@ async def printify_shops():
 
 
 @api_router.get("/printify/print-providers")
-async def printify_print_providers():
+async def printify_print_providers(_: None = Depends(require_admin_key)):
     try:
         providers = await list_print_providers(GILDAN_5000_BLUEPRINT_ID)
         return {"blueprint_id": GILDAN_5000_BLUEPRINT_ID, "providers": providers}
@@ -786,6 +859,8 @@ async def manual_push(capsule_id: str, _: None = Depends(require_admin_key)):
 # App wiring
 # -----------------------------
 app.include_router(api_router)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
@@ -801,7 +876,10 @@ async def on_startup():
     # Reset stale consumed=true drafts that were never approved/denied (e.g. server restart mid-review)
     # If they're old, cleanup_worker handles them. If young, leave them - user will see them again
     # by re-requesting /next. Simpler: just relaunch workers.
-    # _worker_task = asyncio.create_task(queue_worker())  # disabled: /next generates on-demand
+    # NOTE: queue_worker runs in-process. On Render's free tier the service
+    # spins down after 15 min of inactivity and the worker stops; upgrade to
+    # a paid Render tier for continuous pre-warming.
+    _worker_task = asyncio.create_task(queue_worker())
     _cleanup_task = asyncio.create_task(cleanup_worker())
 
 
