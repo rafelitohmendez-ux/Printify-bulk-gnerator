@@ -91,6 +91,19 @@ async def get_product(shop_id: int, product_id: str) -> Dict[str, Any]:
         return await _check(await c.get(f"/shops/{shop_id}/products/{product_id}.json"))
 
 
+async def list_products(shop_id: int, page: int = 1, limit: int = 50) -> Dict[str, Any]:
+    """List products for a shop directly from Printify (paginated).
+    Use this instead of relying on local DB records, since those may be
+    incomplete after an infrastructure migration."""
+    async with _client() as c:
+        return await _check(
+            await c.get(
+                f"/shops/{shop_id}/products.json",
+                params={"page": page, "limit": limit},
+            )
+        )
+
+
 async def update_product(shop_id: int, product_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     async with _client() as c:
         return await _check(
