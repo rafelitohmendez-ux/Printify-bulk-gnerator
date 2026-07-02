@@ -25,7 +25,7 @@ from google import genai
 from google.genai import types
 
 sys.path.insert(0, str(Path(__file__).parent))
-from printify_client import get_product, list_products, update_product, PrintifyError  # noqa: E402
+from printify_client import get_product, list_products, update_product, prioritize_back_mockup, PrintifyError  # noqa: E402
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -214,6 +214,11 @@ async def main(apply: bool, product_id: Optional[str]):
                 })
                 print(f"  APPLIED v")
                 updated += 1
+                try:
+                    await prioritize_back_mockup(shop_id, pid)
+                    print(f"  Thumbnail re-set to back-default v")
+                except PrintifyError as e:
+                    print(f"  WARNING: thumbnail re-priority failed: {e}")
             except PrintifyError as e:
                 print(f"  ERROR pushing update: {e}")
                 errors += 1
