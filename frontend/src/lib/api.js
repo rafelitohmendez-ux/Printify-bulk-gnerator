@@ -1,11 +1,16 @@
+// v2
 import axios from "axios";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const ADMIN_KEY = process.env.REACT_APP_ADMIN_API_KEY || "";
 export const API_BASE = `${BACKEND_URL}/api`;
 
 export const api = axios.create({
   baseURL: API_BASE,
   timeout: 180000,
+  headers: {
+    "X-Admin-Key": ADMIN_KEY,
+  },
 });
 
 // Capsules
