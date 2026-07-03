@@ -864,7 +864,8 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=CORS_ORIGINS,
+    allow_origins=[o for o in CORS_ORIGINS if "vercel.app" not in o],
+    allow_origin_regex=r"https://printify-bulk-gnerator[a-zA-Z0-9\-]*\.vercel\.app",
     allow_methods=["*"],
     allow_headers=["*"],
 )
