@@ -112,6 +112,11 @@ THEME_HINT_OVERRIDES = {
     "wire_crown": "Wire Crown",
     "graveyard_assembly": "Graveyard",
     "post_mortem_mechanics": "Post-Mortem",
+    "dark_americana": "Dark Americana",
+    "digital_decay": "Digital Decay",
+    "plague_gothic": "Plague Gothic",
+    "brutalist_shrine": "Brutalist Shrine",
+    "storm_liturgy": "Storm Liturgy",
 }
 
 # Built-in theme pool
@@ -134,6 +139,11 @@ DEFAULT_THEMES: List[Dict[str, str]] = [
     {"key": "wire_crown", "name": "Wire Crown", "prompt": "wire crown, barbed regalia, industrial coronation"},
     {"key": "graveyard_assembly", "name": "Graveyard Assembly", "prompt": "graveyard assembly line, factory of the dead, mechanized mourning"},
     {"key": "post_mortem_mechanics", "name": "Post-Mortem Mechanics", "prompt": "post-mortem mechanics, autopsy machinery, surgical liturgy"},
+    {"key": "dark_americana", "name": "Dark Americana", "prompt": "dark americana decay, rural gothic, rusted crosses, grain silo cathedral, tobacco barn sermon"},
+    {"key": "digital_decay", "name": "Digital Decay", "prompt": "digital decay, corrupted circuit liturgy, server rack altar, machine consciousness, AI as false god"},
+    {"key": "plague_gothic", "name": "Plague Gothic", "prompt": "plague doctor ritual, memento mori, bone architecture, apothecary altar, medieval death aesthetic"},
+    {"key": "brutalist_shrine", "name": "Brutalist Shrine", "prompt": "brutalist shrine, raw concrete sacred space, Soviet monument worship, cast iron devotion"},
+    {"key": "storm_liturgy", "name": "Storm Liturgy", "prompt": "storm liturgy, lightning as divine punishment, tornado sacrament, flood baptism, weather as god"},
 ]
 
 # App + router
