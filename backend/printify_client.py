@@ -1,5 +1,6 @@
 """Printify API v1 client wrapper."""
 import base64
+import asyncio
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -7,6 +8,8 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 logger = logging.getLogger("printify")
+
+_background_tasks: set = set()
 
 PRINTIFY_BASE_URL = "https://api.printify.com/v1"
 
@@ -187,6 +190,19 @@ async def prioritize_back_mockup(shop_id: int, product_id: str) -> Optional[str]
     return chosen_src
 
 
+async def _retry_prioritize_back_mockup(shop_id: int, product_id: str) -> None:
+    """Background retry: Printify needs time to finish generating mockups, and
+    sometimes overwrites the default-image flag while still doing so, so we set
+    it once after an initial delay and again after a longer one."""
+    try:
+        await asyncio.sleep(15)
+        await prioritize_back_mockup(shop_id, product_id)
+        await asyncio.sleep(30)
+        await prioritize_back_mockup(shop_id, product_id)
+    except Exception:
+        logger.warning("background prioritize_back_mockup retry failed (non-fatal)", exc_info=True)
+
+
 def _pick_black_variants(variants_payload: Dict[str, Any], max_variants: int = 8) -> List[int]:
     """From a variants response, return variant IDs whose color is black."""
     variants = variants_payload.get("variants") or []
@@ -288,9 +304,8 @@ async def push_capsule_as_draft(
     # storefront thumbnail — it's the main visual statement of the design.
     pid = product.get("id")
     if pid:
-        try:
-            await prioritize_back_mockup(shop_id, str(pid))
-        except Exception:
-            logger.warning("prioritize_back_mockup failed (non-fatal)", exc_info=True)
+        task = asyncio.create_task(_retry_prioritize_back_mockup(shop_id, str(pid)))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
     return product
