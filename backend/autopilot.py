@@ -38,6 +38,10 @@ Usage:
     python autopilot.py --revival-only
     python autopilot.py --revival-only --apply
 """
+import sys
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
 import argparse
 import asyncio
 import csv
