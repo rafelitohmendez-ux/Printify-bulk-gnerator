@@ -40,8 +40,12 @@ from printify_client import (
     PrintifyError,
     list_print_providers,
     list_shops,
+    prioritize_back_mockup,
+    publish_product,
     push_capsule_as_draft,
+    update_product,
 )
+from bulk_seo_update import generate_seo
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -636,8 +640,9 @@ async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = N
     ):
         full = await capsules_coll.find_one({"id": capsule_id}, {"_id": 0})
         try:
+            shop_id = int(settings["printify_shop_id"])
             product = await push_capsule_as_draft(
-                shop_id=int(settings["printify_shop_id"]),
+                shop_id=shop_id,
                 print_provider_id=int(settings["printify_print_provider_id"]),
                 capsule=full,
             )
@@ -651,6 +656,37 @@ async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = N
                 }},
             )
             logger.info(f"Pushed capsule {capsule_id} to Printify product {pid}")
+
+            # SEO refresh + immediate publish live to Etsy
+            has_images = bool(full.get("front_image_b64")) and bool(full.get("back_image_b64"))
+            if not has_images:
+                logger.warning(
+                    f"Skipping auto-publish for capsule {capsule_id} (Printify product {pid}): "
+                    "missing front_image_b64 or back_image_b64"
+                )
+            else:
+                try:
+                    seo = await generate_seo(
+                        full.get("capsule_name") or "",
+                        full.get("back_concept") or "",
+                    )
+                    if seo:
+                        new_title = seo.get("title", "")[:140]
+                        new_tags = seo.get("tags", [])
+                        new_desc = DESCRIPTION_TEMPLATE.format(
+                            capsule_name=(full.get("capsule_name") or "").upper(),
+                            back_graphic=(full.get("back_concept") or "").rstrip(".").lower(),
+                        )
+                        await update_product(shop_id, pid, {
+                            "title": new_title,
+                            "tags": new_tags,
+                            "description": new_desc,
+                        })
+                    await prioritize_back_mockup(shop_id, pid)
+                    await publish_product(shop_id, pid)
+                    logger.info(f"Published capsule {capsule_id} (Printify product {pid}) live to Etsy")
+                except Exception:
+                    logger.exception(f"SEO refresh / publish failed for Printify product {pid}")
         except Exception as e:
             logger.exception("printify push failed")
             await capsules_coll.update_one(

@@ -114,6 +114,19 @@ async def update_product(shop_id: int, product_id: str, payload: Dict[str, Any])
         )
 
 
+async def publish_product(shop_id: int, product_id: str) -> None:
+    """Publish a product live to its sales channel (e.g. Etsy)."""
+    async with _client() as c:
+        await _check(
+            await c.post(
+                f"/shops/{shop_id}/products/{product_id}/publish.json",
+                json={"title": True, "description": True, "images": True,
+                      "variants": True, "tags": True, "keyFeatures": True,
+                      "shipping_template": True}
+            )
+        )
+
+
 def _pick_front_mockup(images: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """From a product's image list, pick the front-view mockup that best
     showcases a small left-chest design. Prefer 'close'/'detail'/'chest' URLs."""
