@@ -898,6 +898,7 @@ app.add_middleware(
 @app.on_event("startup")
 async def on_startup():
     global _worker_task, _cleanup_task
+    await capsules_coll.create_index([("created_at", -1)])
     # Reset stale consumed=true drafts that were never approved/denied (e.g. server restart mid-review)
     # If they're old, cleanup_worker handles them. If young, leave them - user will see them again
     # by re-requesting /next. Simpler: just relaunch workers.
