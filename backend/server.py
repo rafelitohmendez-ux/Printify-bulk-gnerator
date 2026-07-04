@@ -117,6 +117,13 @@ THEME_HINT_OVERRIDES = {
     "plague_gothic": "Plague Gothic",
     "brutalist_shrine": "Brutalist Shrine",
     "storm_liturgy": "Storm Liturgy",
+    "asylum_plague": "Asylum Plague",
+    "bone_church": "Bone Church",
+    "crow_sermon": "Crow Sermon",
+    "folk_horror": "Folk Horror",
+    "deep_sea_gothic": "Deep Sea Gothic",
+    "cyber_mortuary": "Cyber Mortuary",
+    "diesel_punk_relic": "Diesel Punk Relic",
 }
 
 # Built-in theme pool
@@ -144,6 +151,13 @@ DEFAULT_THEMES: List[Dict[str, str]] = [
     {"key": "plague_gothic", "name": "Plague Gothic", "prompt": "plague doctor ritual, memento mori, bone architecture, apothecary altar, medieval death aesthetic"},
     {"key": "brutalist_shrine", "name": "Brutalist Shrine", "prompt": "brutalist shrine, raw concrete sacred space, Soviet monument worship, cast iron devotion"},
     {"key": "storm_liturgy", "name": "Storm Liturgy", "prompt": "storm liturgy, lightning as divine punishment, tornado sacrament, flood baptism, weather as god"},
+    {"key": "asylum_plague", "name": "Asylum Plague", "prompt": "plague asylum, abandoned sanitarium decay, plague doctor ward, crumbling medical gothic, quarantine ritual, infected institution"},
+    {"key": "bone_church", "name": "Bone Church", "prompt": "ossuary architecture, bone church, catacombs altar, skeleton liturgy, reliquary decay, death chapel"},
+    {"key": "crow_sermon", "name": "Crow Sermon", "prompt": "corvid death omen, plague crow messenger, black feather ritual, raven sermon, crow death cult"},
+    {"key": "folk_horror", "name": "Folk Horror", "prompt": "wicker effigy, harvest ritual, rural cult ceremony, folk horror sacrifice, pagan industrial decay"},
+    {"key": "deep_sea_gothic", "name": "Deep Sea Gothic", "prompt": "abyssal pressure ritual, drowned cathedral, bioluminescent decay, deep ocean altar, sunken church"},
+    {"key": "cyber_mortuary", "name": "Cyber Mortuary", "prompt": "digital afterlife, server room funeral, LED mourning ritual, cyber death, data tomb"},
+    {"key": "diesel_punk_relic", "name": "Diesel Punk Relic", "prompt": "diesel engine worship, petroleum liturgy, oil slick sacred geometry, industrial fuel ritual"},
 ]
 
 # App + router
