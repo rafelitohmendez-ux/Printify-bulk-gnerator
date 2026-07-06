@@ -91,7 +91,10 @@ async def generate_background_image(scene_prompt: str, back_concept: str) -> Opt
         f"A black heavy cotton t-shirt displayed naturally in {scene_prompt}, "
         f"the back of the shirt facing camera, featuring {back_concept} printed in "
         f"stark white ink. Cinematic lighting, gothic industrial aesthetic, "
-        f"photorealistic product photography."
+        f"photorealistic product photography. "
+        f"The shirt is displayed upright and hanging naturally, back facing the camera "
+        f"directly. The shirt is NOT laying flat, NOT on a surface, NOT folded. "
+        f"It is suspended or hanging in the environment."
     )
     try:
         response = await asyncio.to_thread(
@@ -105,7 +108,10 @@ async def generate_background_image(scene_prompt: str, back_concept: str) -> Opt
         return None
     if not response.candidates:
         return None
-    for part in response.candidates[0].content.parts:
+    content = response.candidates[0].content
+    if not content or not content.parts:
+        return None
+    for part in content.parts:
         if getattr(part, "inline_data", None) and part.inline_data.data:
             return part.inline_data.data
     return None
