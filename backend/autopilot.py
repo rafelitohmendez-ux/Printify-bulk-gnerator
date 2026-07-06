@@ -71,6 +71,7 @@ PURGE_HISTORY_FILE = ROOT_DIR / "purge_history.json"
 
 # Thresholds
 MIN_IMPRESSIONS_FOR_PURGE = 50   # listing must have 50+ views before eligible
+MIN_LISTING_AGE_DAYS = 90        # listing must be at least this old (Printify created_at) before it can enter the purge cycle
 LAST_CHANCE_DAYS = 7             # days in last-chance markdown window
 HIBERNATION_DAYS = 90            # days before revival window opens
 REVIVAL_DAYS = 14                # length of revival window
@@ -108,6 +109,22 @@ def days_since(iso_str: str) -> int:
     if then.tzinfo is None:
         then = then.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - then).days
+
+
+def product_age_days(product: Dict[str, Any]) -> Optional[int]:
+    """Age in days of a Printify product, based on its created_at field.
+    Returns None if created_at is missing or unparseable."""
+    raw = product.get("created_at")
+    if not raw:
+        return None
+    normalized = raw.replace(" ", "T", 1) if " " in raw and "T" not in raw else raw
+    try:
+        created = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - created).days
 
 
 # ─── CSV Parsing ─────────────────────────────────────────────────────────────
@@ -214,6 +231,14 @@ async def run_last_chance(
         product = match_listing_to_product(listing["title"], products)
         if not product:
             print(f"  SKIP  {listing['title'][:50]} — no matching Printify product found")
+            continue
+
+        age_days = product_age_days(product)
+        if age_days is None:
+            print(f"  SKIP  {listing['title'][:50]} — no created_at date on Printify product")
+            continue
+        if age_days < MIN_LISTING_AGE_DAYS:
+            print(f"  SKIP  {listing['title'][:50]} — only {age_days} days old (need {MIN_LISTING_AGE_DAYS}+)")
             continue
 
         pid = str(product.get("id"))
