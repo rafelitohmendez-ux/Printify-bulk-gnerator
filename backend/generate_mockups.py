@@ -1,11 +1,12 @@
 """
 Contextual Background Thumbnail Generator
 ==========================================
-For each Printify product, infers its gothic sub-theme from the title/tags,
-generates a matching dark atmospheric background via Gemini image generation,
-downloads the product's existing back-print mockup, composites the mockup
-onto the new background with Pillow, uploads the composite to Printify, and
-sets it as the default product thumbnail.
+For each Printify product, infers its gothic sub-theme from the title/tags
+and extracts its back-print concept from the description, then generates a
+single complete product photo via Gemini image generation showing the shirt
+naturally in its themed environment with the back print already on it.
+Uploads the generated photo to Printify and sets it as the default product
+thumbnail.
 
 Usage:
     python generate_mockups.py                        # dry run, all products
@@ -16,19 +17,16 @@ Usage:
 import argparse
 import asyncio
 import base64
-import io
 import os
 import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import httpx
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 from google import genai
 from google.genai import types
-from PIL import Image, ImageOps
 
 sys.path.insert(0, str(Path(__file__).parent))
 from printify_client import (  # noqa: E402
@@ -38,6 +36,7 @@ from printify_client import (  # noqa: E402
     upload_image_base64,
     PrintifyError,
 )
+from bulk_seo_update import extract_back_concept  # noqa: E402
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -70,13 +69,6 @@ THEME_BACKGROUNDS = [
 ]
 DEFAULT_BACKGROUND = "a dim industrial gothic interior, rusted metal surfaces, cold directional light, dust hanging in the air"
 
-BACKGROUND_STYLE_PREFIX = (
-    "A stark, moody, dark atmospheric photo-real background scene for a streetwear "
-    "product photo. High contrast, cinematic low-key lighting, desaturated gothic "
-    "industrial color palette. NO people, NO text, NO logos, NO shirts, NO product "
-    "of any kind in frame - an empty environment/backdrop only. "
-)
-
 
 def infer_theme_prompt(product: Dict[str, Any]) -> str:
     """Infer a background scene prompt from the product's title/tags/description."""
@@ -91,17 +83,25 @@ def infer_theme_prompt(product: Dict[str, Any]) -> str:
     return DEFAULT_BACKGROUND
 
 
-async def generate_background_image(scene_prompt: str) -> Optional[bytes]:
-    """Generate a background image via Gemini. Returns raw image bytes, or None."""
+async def generate_background_image(scene_prompt: str, back_concept: str) -> Optional[bytes]:
+    """Generate a complete product photo via Gemini: the shirt shown naturally
+    in its themed environment, back print already rendered on it. Returns raw
+    image bytes, or None."""
+    prompt = (
+        f"A black heavy cotton t-shirt displayed naturally in {scene_prompt}, "
+        f"the back of the shirt facing camera, featuring {back_concept} printed in "
+        f"stark white ink. Cinematic lighting, gothic industrial aesthetic, "
+        f"photorealistic product photography."
+    )
     try:
         response = await asyncio.to_thread(
             genai_client.models.generate_content,
             model="gemini-2.5-flash-image",
-            contents=BACKGROUND_STYLE_PREFIX + scene_prompt,
+            contents=prompt,
             config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
         )
     except Exception as exc:
-        print(f"    Gemini background generation error: {exc}")
+        print(f"    Gemini image generation error: {exc}")
         return None
     if not response.candidates:
         return None
@@ -111,108 +111,55 @@ async def generate_background_image(scene_prompt: str) -> Optional[bytes]:
     return None
 
 
-def _pick_back_image(images: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """From a product's image list, pick the best back-view mockup."""
-    backs = [img for img in images if (img.get("position") or "").lower() == "back"]
-    if not backs:
-        return None
-    for keyword in ("flat", "full", "lifestyle"):
-        for img in backs:
-            if keyword in (img.get("src") or "").lower():
-                return img
-    return backs[0]
-
-
-async def download_image(url: str) -> bytes:
-    async with httpx.AsyncClient(timeout=60.0) as c:
-        resp = await c.get(url)
-        resp.raise_for_status()
-        return resp.content
-
-
-def composite_mockup_on_background(background_bytes: bytes, mockup_bytes: bytes) -> bytes:
-    """Cut the shirt mockup out of its (typically flat/light) backdrop and
-    composite it onto the generated atmospheric background.
-
-    The cutout is a luminance-threshold matte, not true background removal —
-    Printify mockups are shot on a plain light backdrop, so this holds up well
-    in practice, but can leave a faint halo on busy/light-colored mockups.
-    """
-    bg = Image.open(io.BytesIO(background_bytes)).convert("RGBA")
-    mockup = Image.open(io.BytesIO(mockup_bytes)).convert("RGBA")
-
-    # Scale mockup to ~85% of background height, preserving aspect ratio.
-    target_h = int(bg.height * 0.85)
-    scale = target_h / mockup.height
-    mockup = mockup.resize((max(1, int(mockup.width * scale)), target_h), Image.LANCZOS)
-
-    # Cut out the near-white/light backdrop the mockup was shot on.
-    gray = ImageOps.grayscale(mockup)
-    mask = gray.point(lambda p: 0 if p > 235 else 255)
-    mockup.putalpha(mask)
-
-    x = (bg.width - mockup.width) // 2
-    y = (bg.height - mockup.height) // 2
-    bg.paste(mockup, (x, y), mockup)
-
-    out = io.BytesIO()
-    bg.convert("RGB").save(out, format="PNG")
-    return out.getvalue()
-
-
-async def process_product(shop_id: int, product: Dict[str, Any], apply: bool) -> bool:
+async def process_product(shop_id: int, product: Dict[str, Any], apply: bool, output_file: str = "test_composite.png") -> bool:
     pid = str(product.get("id"))
     title = (product.get("title") or "").strip()
     print(f"\n[{title[:60]}] ({pid})")
 
-    images = product.get("images") or []
-    back_image = _pick_back_image(images)
-    if not back_image or not back_image.get("src"):
-        print("  SKIP - no back mockup image found")
+    back_concept = extract_back_concept(product.get("description") or "")
+    if not back_concept:
+        print("  SKIP - no back concept extractable from description")
         return False
 
     scene_prompt = infer_theme_prompt(product)
-    print(f"  Background scene: {scene_prompt[:80]}...")
+    print(f"  Scene: {scene_prompt[:80]}...")
+    print(f"  Back concept: {back_concept[:80]}")
 
-    background_bytes = await generate_background_image(scene_prompt)
-    if not background_bytes:
-        print("  ERROR - Gemini returned no background image")
+    image_bytes = await generate_background_image(scene_prompt, back_concept)
+    if not image_bytes:
+        print("  ERROR - Gemini returned no image")
         return False
-
-    try:
-        mockup_bytes = await download_image(back_image["src"])
-    except httpx.HTTPError as e:
-        print(f"  ERROR downloading mockup: {e}")
-        return False
-
-    composite_bytes = composite_mockup_on_background(background_bytes, mockup_bytes)
-    print(f"  Composite generated ({len(composite_bytes)} bytes)")
+    print(f"  Product photo generated ({len(image_bytes)} bytes)")
 
     if not apply:
-        print("  DRY RUN - would upload composite and set as default thumbnail")
+        preview_path = ROOT_DIR / output_file
+        preview_path.write_bytes(image_bytes)
+        print(f"  DRY RUN - image saved to {preview_path}")
+        print("  Re-run with --apply to upload and set as default thumbnail")
         return True
 
-    b64 = base64.b64encode(composite_bytes).decode("utf-8")
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
     cname = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")[:40] or pid
     try:
         upload = await upload_image_base64(f"{cname}_thumb.png", b64)
     except PrintifyError as e:
-        print(f"  ERROR uploading composite: {e}")
+        print(f"  ERROR uploading image: {e}")
         return False
 
-    new_src = upload.get("preview_url") or upload.get("src")
-    if not new_src:
-        print(f"  ERROR - upload response missing preview_url: {upload}")
+    new_image_id = upload.get("id")
+    if not new_image_id:
+        print(f"  ERROR - upload response missing id: {upload}")
         return False
 
+    variant_ids = [v.get("id") for v in (product.get("variants") or []) if v.get("id") is not None]
     updated_images = [{
-        "src": new_src,
-        "variant_ids": back_image.get("variant_ids", []),
-        "position": back_image.get("position"),
+        "id": new_image_id,
+        "variant_ids": variant_ids,
+        "position": "back",
         "is_default": True,
         "is_selected_for_publishing": True,
     }]
-    for img in images:
+    for img in (product.get("images") or []):
         updated_images.append({
             "src": img.get("src"),
             "variant_ids": img.get("variant_ids", []),
@@ -223,7 +170,7 @@ async def process_product(shop_id: int, product: Dict[str, Any], apply: bool) ->
 
     try:
         await update_product(shop_id, pid, {"images": updated_images})
-        print("  APPLIED - composite set as default thumbnail")
+        print("  APPLIED - product photo set as default thumbnail")
         return True
     except PrintifyError as e:
         print(f"  ERROR setting thumbnail: {e}")
@@ -255,7 +202,7 @@ async def fetch_target_products(shop_id: int, product_id: Optional[str]) -> List
     return all_products
 
 
-async def main(apply: bool, product_id: Optional[str]):
+async def main(apply: bool, product_id: Optional[str], output_file: str = "test_composite.png"):
     client = AsyncIOMotorClient(os.environ["MONGO_URL"])
     db = client[os.environ["DB_NAME"]]
     settings = await db.settings.find_one({"id": "config"}, {"_id": 0}) or {}
@@ -275,7 +222,7 @@ async def main(apply: bool, product_id: Optional[str]):
 
     done, skipped = 0, 0
     for p in products:
-        ok = await process_product(shop_id, p, apply)
+        ok = await process_product(shop_id, p, apply, output_file)
         if ok:
             done += 1
         else:
@@ -294,5 +241,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Contextual Background Thumbnail Generator")
     parser.add_argument("--apply", action="store_true", help="Apply changes (default is dry-run)")
     parser.add_argument("--product-id", default=None, help="Only process this Printify product ID")
+    parser.add_argument("--output-file", default="test_composite.png", help="Filename for the dry-run preview image (default: test_composite.png)")
     args = parser.parse_args()
-    asyncio.run(main(apply=args.apply, product_id=args.product_id))
+    asyncio.run(main(apply=args.apply, product_id=args.product_id, output_file=args.output_file))
