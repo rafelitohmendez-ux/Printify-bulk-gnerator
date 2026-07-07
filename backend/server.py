@@ -687,6 +687,56 @@ async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = N
                     logger.info(f"Published capsule {capsule_id} (Printify product {pid}) live to Etsy")
                 except Exception:
                     logger.exception(f"SEO refresh / publish failed for Printify product {pid}")
+
+                # Best-effort: generate a themed atmospheric photo and upload it
+                # directly to the matching live Etsy listing. Isolated in its own
+                # try/except (including the imports) so a missing Etsy config or
+                # any failure here never affects the approve/publish flow above.
+                try:
+                    from generate_mockups import generate_background_image, infer_theme_prompt
+                    from upload_etsy_images import fetch_etsy_listings, match_etsy_listing, upload_listing_image
+
+                    etsy_listings = await fetch_etsy_listings()
+                    listing = match_etsy_listing({"title": full.get("title") or ""}, etsy_listings)
+                    if not listing:
+                        logger.warning(
+                            f"No matching Etsy listing found for capsule {capsule_id} "
+                            f"(Printify product {pid}); skipping atmospheric image"
+                        )
+                    else:
+                        scene_prompt = infer_theme_prompt({
+                            "title": full.get("title") or "",
+                            "description": full.get("description") or "",
+                            "tags": (full.get("tags") or []) + [full.get("theme_seed") or ""],
+                        })
+                        image_bytes = await generate_background_image(
+                            scene_prompt, full.get("back_concept") or ""
+                        )
+                        if not image_bytes:
+                            logger.warning(
+                                f"Gemini returned no atmospheric image for capsule {capsule_id} ({pid})"
+                            )
+                        else:
+                            cname = re.sub(
+                                r"[^a-z0-9]+", "_", (full.get("capsule_name") or pid).lower()
+                            ).strip("_")[:40] or pid
+                            resp = await upload_listing_image(
+                                listing["listing_id"], image_bytes, f"{cname}_etsy.png"
+                            )
+                            if resp.status_code >= 400:
+                                logger.warning(
+                                    f"Etsy atmospheric image upload failed for {pid}: "
+                                    f"{resp.status_code} {resp.text}"
+                                )
+                            else:
+                                logger.info(
+                                    f"Uploaded atmospheric image to Etsy listing "
+                                    f"{listing['listing_id']} for capsule {capsule_id} (Printify product {pid})"
+                                )
+                except Exception:
+                    logger.exception(
+                        f"Etsy atmospheric image upload failed for capsule {capsule_id} (Printify product {pid})"
+                    )
         except Exception as e:
             logger.exception("printify push failed")
             await capsules_coll.update_one(
