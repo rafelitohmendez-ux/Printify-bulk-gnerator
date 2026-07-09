@@ -710,7 +710,9 @@ async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = N
                             "tags": (full.get("tags") or []) + [full.get("theme_seed") or ""],
                         })
                         image_bytes = await generate_background_image(
-                            scene_prompt, full.get("back_concept") or ""
+                            scene_prompt,
+                            full.get("back_concept") or "",
+                            design_image_bytes=base64.b64decode(full["back_image_b64"]),
                         )
                         if not image_bytes:
                             logger.warning(

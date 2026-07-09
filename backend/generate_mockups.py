@@ -83,24 +83,42 @@ def infer_theme_prompt(product: Dict[str, Any]) -> str:
     return DEFAULT_BACKGROUND
 
 
-async def generate_background_image(scene_prompt: str, back_concept: str) -> Optional[bytes]:
+async def generate_background_image(
+    scene_prompt: str,
+    back_concept: str,
+    design_image_bytes: Optional[bytes] = None,
+) -> Optional[bytes]:
     """Generate a complete product photo via Gemini: the shirt shown naturally
-    in its themed environment, back print already rendered on it. Returns raw
-    image bytes, or None."""
-    prompt = (
-        f"A black heavy cotton t-shirt displayed naturally in {scene_prompt}, "
-        f"the back of the shirt facing camera, featuring {back_concept} printed in "
-        f"stark white ink. Cinematic lighting, gothic industrial aesthetic, "
-        f"photorealistic product photography. "
-        f"The shirt is displayed upright and hanging naturally, back facing the camera "
-        f"directly. The shirt is NOT laying flat, NOT on a surface, NOT folded. "
-        f"It is suspended or hanging in the environment."
-    )
+    in its themed environment. If design_image_bytes is given, sends it
+    alongside a multimodal prompt asking Gemini to place that exact design on
+    the shirt unaltered. Otherwise falls back to describing the design in text
+    (back_concept) for Gemini to reimagine from scratch. Returns raw image
+    bytes, or None."""
+    if design_image_bytes is not None:
+        prompt = (
+            f"Place this exact design on a black t-shirt displayed upright and "
+            f"hanging naturally in {scene_prompt}, back facing camera. The design "
+            f"must appear exactly as shown on the shirt — do not alter or reimagine "
+            f"it. Cinematic lighting, gothic industrial aesthetic, photorealistic "
+            f"product photography. The shirt is NOT laying flat."
+        )
+        contents = [types.Part.from_bytes(data=design_image_bytes, mime_type="image/png"), prompt]
+    else:
+        prompt = (
+            f"A black heavy cotton t-shirt displayed naturally in {scene_prompt}, "
+            f"the back of the shirt facing camera, featuring {back_concept} printed in "
+            f"stark white ink. Cinematic lighting, gothic industrial aesthetic, "
+            f"photorealistic product photography. "
+            f"The shirt is displayed upright and hanging naturally, back facing the camera "
+            f"directly. The shirt is NOT laying flat, NOT on a surface, NOT folded. "
+            f"It is suspended or hanging in the environment."
+        )
+        contents = prompt
     try:
         response = await asyncio.to_thread(
             genai_client.models.generate_content,
             model="gemini-2.5-flash-image",
-            contents=prompt,
+            contents=contents,
             config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
         )
     except Exception as exc:

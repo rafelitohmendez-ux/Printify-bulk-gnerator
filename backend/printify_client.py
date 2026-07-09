@@ -114,6 +114,12 @@ async def update_product(shop_id: int, product_id: str, payload: Dict[str, Any])
         )
 
 
+async def delete_product(shop_id: int, product_id: str) -> None:
+    """Delete a product from Printify (e.g. draft cleanup)."""
+    async with _client() as c:
+        await _check(await c.delete(f"/shops/{shop_id}/products/{product_id}.json"))
+
+
 async def publish_product(shop_id: int, product_id: str) -> None:
     """Publish a product live to its sales channel (e.g. Etsy)."""
     async with _client() as c:
@@ -241,16 +247,21 @@ async def push_capsule_as_draft(
     # 1. Upload images
     front_b64 = capsule.get("front_image_b64")
     back_b64 = capsule.get("back_image_b64")
-    if not front_b64 or not back_b64:
-        raise PrintifyError("Capsule missing front/back image data")
+    if not back_b64:
+        raise PrintifyError("Capsule missing back image data")
 
     cname = (capsule.get("capsule_name") or "capsule").replace(" ", "_").lower()
-    front_upload = await upload_image_base64(f"{cname}_front.png", front_b64)
     back_upload = await upload_image_base64(f"{cname}_back.png", back_b64)
-    front_image_id = front_upload.get("id")
     back_image_id = back_upload.get("id")
-    if not front_image_id or not back_image_id:
-        raise PrintifyError(f"Image upload missing id: front={front_upload}, back={back_upload}")
+    if not back_image_id:
+        raise PrintifyError(f"Image upload missing id: back={back_upload}")
+
+    front_image_id = None
+    if front_b64:
+        front_upload = await upload_image_base64(f"{cname}_front.png", front_b64)
+        front_image_id = front_upload.get("id")
+        if not front_image_id:
+            raise PrintifyError(f"Image upload missing id: front={front_upload}")
 
     # 2. Get black variants for this blueprint+provider
     variants_payload = await list_variants(GILDAN_5000_BLUEPRINT_ID, print_provider_id, show_out_of_stock=0)
@@ -261,43 +272,40 @@ async def push_capsule_as_draft(
             f"provider {print_provider_id}. Verify this provider carries black Gildan 5000."
         )
 
-    # 3. Construct product payload with front (left-chest) + back placements
-    # Standard Printify positions for apparel: "front" and "back".
+    # 3. Construct product payload: back placement always, front (left-chest)
+    # placement only if a front image was supplied.
     variants_array = [
         {"id": vid, "price": DEFAULT_VARIANT_PRICE_CENTS, "is_enabled": True}
         for vid in variant_ids
     ]
-    print_areas = [
+    placeholders = [
         {
-            "variant_ids": variant_ids,
-            "placeholders": [
+            "position": "back",
+            "images": [
                 {
-                    "position": "front",
-                    "images": [
-                        {
-                            "id": front_image_id,
-                            "x": 0.27,  # left-chest area
-                            "y": 0.32,
-                            "scale": 0.18,
-                            "angle": 0,
-                        }
-                    ],
-                },
-                {
-                    "position": "back",
-                    "images": [
-                        {
-                            "id": back_image_id,
-                            "x": 0.5,
-                            "y": 0.5,
-                            "scale": 1.0,
-                            "angle": 0,
-                        }
-                    ],
-                },
+                    "id": back_image_id,
+                    "x": 0.5,
+                    "y": 0.5,
+                    "scale": 1.0,
+                    "angle": 0,
+                }
             ],
-        }
+        },
     ]
+    if front_image_id:
+        placeholders.insert(0, {
+            "position": "front",
+            "images": [
+                {
+                    "id": front_image_id,
+                    "x": 0.27,  # left-chest area
+                    "y": 0.32,
+                    "scale": 0.18,
+                    "angle": 0,
+                }
+            ],
+        })
+    print_areas = [{"variant_ids": variant_ids, "placeholders": placeholders}]
 
     product_payload = {
         "title": capsule.get("title") or capsule.get("capsule_name", "Untitled"),

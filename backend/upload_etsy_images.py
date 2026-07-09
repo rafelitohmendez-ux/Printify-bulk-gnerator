@@ -35,7 +35,7 @@ from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 
 sys.path.insert(0, str(Path(__file__).parent))
-from printify_client import list_products, get_product, PrintifyError  # noqa: E402
+from printify_client import list_products, get_product, _pick_back_mockup, PrintifyError  # noqa: E402
 from bulk_seo_update import extract_capsule_name, extract_back_concept  # noqa: E402
 from generate_mockups import infer_theme_prompt, generate_background_image  # noqa: E402
 
@@ -150,9 +150,19 @@ async def fetch_etsy_listings() -> List[Dict[str, Any]]:
 def match_etsy_listing(product: Dict[str, Any], listings: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Find the Etsy listing matching the Printify product. Prefers an exact
     full-title match (Printify pushes identical titles to Etsy, so this is
-    unambiguous). Falls back to capsule-name matching only when it narrows to
-    exactly one candidate — refuses to guess when multiple listings share a
-    capsule name (e.g. two different designs both starting "Voltage Requiem")."""
+    unambiguous). Falls back to capsule-name matching when it narrows to
+    exactly one candidate.
+
+    When multiple listings share a capsule name (e.g. two different designs
+    both starting "Voltage Requiem") - which in practice also means the
+    Printify title has since diverged from Etsy's (e.g. after an SEO title
+    rewrite that was never republished to Etsy, so the exact-title match
+    above no longer fires) - narrows further by comparing the back_concept
+    extracted from each side's description. That phrase is re-embedded
+    verbatim by bulk_seo_update.py's description rewrite, so it stays
+    identical on both sides even though the title and surrounding prose
+    diverge. Refuses to guess only if neither of these resolves to exactly
+    one candidate."""
     product_title = (product.get("title") or "").strip().lower()
     for listing in listings:
         if (listing.get("title") or "").strip().lower() == product_title:
@@ -168,7 +178,21 @@ def match_etsy_listing(product: Dict[str, Any], listings: List[Dict[str, Any]]) 
             product_name.startswith(listing_name)
         ):
             candidates.append(listing)
-    return candidates[0] if len(candidates) == 1 else None
+
+    if len(candidates) == 1:
+        return candidates[0]
+
+    if len(candidates) > 1:
+        product_back_concept = extract_back_concept(product.get("description") or "")
+        if product_back_concept:
+            back_concept_matches = [
+                listing for listing in candidates
+                if extract_back_concept(listing.get("description") or "") == product_back_concept
+            ]
+            if len(back_concept_matches) == 1:
+                return back_concept_matches[0]
+
+    return None
 
 
 async def upload_listing_image(listing_id: int, image_bytes: bytes, file_name: str) -> httpx.Response:
@@ -201,7 +225,19 @@ async def process_product(product: Dict[str, Any], etsy_listings: List[Dict[str,
     scene_prompt = infer_theme_prompt(product)
     print(f"  Scene: {scene_prompt[:80]}...")
 
-    image_bytes = await generate_background_image(scene_prompt, back_concept)
+    design_image_bytes = None
+    back_image = _pick_back_mockup(product.get("images") or [])
+    if back_image and back_image.get("src"):
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as c:
+                resp = await c.get(back_image["src"])
+                resp.raise_for_status()
+                design_image_bytes = resp.content
+            print(f"  Using actual back print as design reference ({len(design_image_bytes)} bytes)")
+        except Exception as e:
+            print(f"  WARNING - could not download back print image, falling back to text-only: {e}")
+
+    image_bytes = await generate_background_image(scene_prompt, back_concept, design_image_bytes)
     if not image_bytes:
         print("  ERROR - Gemini returned no image")
         return False
