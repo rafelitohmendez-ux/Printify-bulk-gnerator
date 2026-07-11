@@ -7,8 +7,10 @@ scene) suitable for DTG printing. Saves locally only - no Printify or Etsy
 writes.
 
 Usage:
-    python extract_designs.py            # dry run, lists what would be generated
-    python extract_designs.py --apply    # generate and save PNGs
+    python extract_designs.py                    # dry run, all products
+    python extract_designs.py --apply             # generate and save PNGs, all products
+    python extract_designs.py --product-id XYZ    # dry run, single product
+    python extract_designs.py --product-id XYZ --apply
 """
 import argparse
 import asyncio
@@ -45,7 +47,10 @@ async def generate_design_image(back_concept: str) -> Optional[bytes]:
         "Stark white ink illustration on pure black background. No shirt, "
         "no environment, no background scene. Just the graphic design: "
         f"{back_concept}. Gothic industrial aesthetic, high contrast, "
-        "suitable for DTG t-shirt printing. Square format 1024x1024."
+        "suitable for DTG t-shirt printing. Square format 1024x1024. "
+        "Pure black background only. No white borders, no padding, no frames, "
+        "no background boxes. The design bleeds to the edges. Black "
+        "background fills the entire image."
     )
     try:
         response = await asyncio.to_thread(
@@ -74,7 +79,14 @@ def load_processed_ids() -> list:
     return json.loads(PROCESSED_FILE.read_text())
 
 
-async def main(apply: bool):
+def load_manifest_by_product_id() -> dict:
+    if not MANIFEST_FILE.exists():
+        return {}
+    entries = json.loads(MANIFEST_FILE.read_text())
+    return {e["product_id"]: e for e in entries}
+
+
+async def main(apply: bool, product_id: Optional[str] = None):
     client = AsyncIOMotorClient(os.environ["MONGO_URL"])
     db = client[os.environ["DB_NAME"]]
     settings = await db.settings.find_one({"id": "config"}, {"_id": 0}) or {}
@@ -86,21 +98,29 @@ async def main(apply: bool):
     shop_id = int(shop_id)
 
     product_ids = load_processed_ids()
+    if product_id:
+        product_ids = [p for p in product_ids if p == product_id]
     if not product_ids:
-        print(f"No product IDs found in {PROCESSED_FILE.name} - nothing to process.")
+        print(f"No matching product ID(s) found in {PROCESSED_FILE.name}.")
         client.close()
         return
 
-    print(f"Extract Designs - {'APPLY' if apply else 'DRY RUN'}\n")
-    print(f"Found {len(product_ids)} product(s) in {PROCESSED_FILE.name}.\n")
+    mode = "SINGLE PRODUCT" if product_id else "ALL PRODUCTS"
+    print(f"Extract Designs - {mode} - {'APPLY' if apply else 'DRY RUN'}\n")
+    print(f"Found {len(product_ids)} product(s) to process.\n")
     print("-" * 70)
 
     if apply:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    existing_manifest = load_manifest_by_product_id()
+    reserved_filenames = {
+        e["filename"][:-4]: pid for pid, e in existing_manifest.items() if pid not in product_ids
+    }
+
     done, skipped, errors = 0, 0, 0
-    seen_filenames: dict = {}
-    manifest: list = []
+    seen_filenames: dict = dict(reserved_filenames)
+    manifest_updates: dict = {}
 
     for pid in product_ids:
         try:
@@ -121,9 +141,12 @@ async def main(apply: bool):
             continue
         print(f"  Back concept: {back_concept[:80]}")
 
-        fname = re.sub(r"[^a-z0-9]+", "_", capsule_name.lower()).strip("_") or pid
-        if fname in seen_filenames:
-            fname = f"{fname}_{pid[-6:]}"
+        if pid in existing_manifest:
+            fname = existing_manifest[pid]["filename"][:-4]
+        else:
+            fname = re.sub(r"[^a-z0-9]+", "_", capsule_name.lower()).strip("_") or pid
+            if fname in seen_filenames:
+                fname = f"{fname}_{pid[-6:]}"
         seen_filenames[fname] = pid
         out_path = OUTPUT_DIR / f"{fname}.png"
 
@@ -140,12 +163,12 @@ async def main(apply: bool):
                 continue
             out_path.write_bytes(image_bytes)
             print(f"  APPLIED - saved to {out_path}")
-            manifest.append({
+            manifest_updates[pid] = {
                 "product_id": pid,
                 "capsule_name": capsule_name,
                 "back_concept": back_concept,
                 "filename": out_path.name,
-            })
+            }
             done += 1
         except Exception as e:
             print(f"  ERROR - unexpected exception: {e}")
@@ -153,9 +176,11 @@ async def main(apply: bool):
             continue
         await asyncio.sleep(1.0)
 
-    if apply and manifest:
-        MANIFEST_FILE.write_text(json.dumps(manifest, indent=2))
-        print(f"\nWrote manifest for {len(manifest)} design(s) -> {MANIFEST_FILE}")
+    if apply and manifest_updates:
+        existing_manifest.update(manifest_updates)
+        MANIFEST_FILE.write_text(json.dumps(list(existing_manifest.values()), indent=2))
+        print(f"\nUpdated manifest ({len(manifest_updates)} entries this run, "
+              f"{len(existing_manifest)} total) -> {MANIFEST_FILE}")
 
     print("\n" + "=" * 70)
     print(f"{'APPLIED' if apply else 'DRY RUN'}: {done} processed, {skipped} skipped, {errors} errors")
@@ -168,5 +193,6 @@ async def main(apply: bool):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract clean print-ready designs from product back concepts")
     parser.add_argument("--apply", action="store_true", help="Generate and save design files (default is dry-run)")
+    parser.add_argument("--product-id", default=None, help="Only process this single Printify product ID")
     args = parser.parse_args()
-    asyncio.run(main(apply=args.apply))
+    asyncio.run(main(apply=args.apply, product_id=args.product_id))

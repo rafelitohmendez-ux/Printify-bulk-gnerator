@@ -114,6 +114,47 @@ async def update_product(shop_id: int, product_id: str, payload: Dict[str, Any])
         )
 
 
+async def update_back_print_image(shop_id: int, product_id: str, new_image_id: str) -> Dict[str, Any]:
+    """Swap the back-placeholder image on an existing product's print area,
+    in place - preserves variant_ids and the image's x/y/scale/angle.
+    Used to push a corrected design without creating a new product."""
+    product = await get_product(shop_id, product_id)
+    print_areas = product.get("print_areas") or []
+
+    target_area = None
+    target_placeholder = None
+    for area in print_areas:
+        for ph in area.get("placeholders") or []:
+            if ph.get("position") == "back" and ph.get("images"):
+                target_area = area
+                target_placeholder = ph
+                break
+        if target_area:
+            break
+
+    if not target_area or not target_placeholder:
+        raise PrintifyError(f"Product {product_id} has no back placeholder with an existing image")
+
+    old_image = target_placeholder["images"][0]
+    new_placeholders = [{
+        "position": "back",
+        "images": [{
+            "id": new_image_id,
+            "x": old_image.get("x", 0.5),
+            "y": old_image.get("y", 0.5),
+            "scale": old_image.get("scale", 1.0),
+            "angle": old_image.get("angle", 0),
+        }],
+    }]
+
+    return await update_product(shop_id, product_id, {
+        "print_areas": [{
+            "variant_ids": target_area.get("variant_ids", []),
+            "placeholders": new_placeholders,
+        }]
+    })
+
+
 async def delete_product(shop_id: int, product_id: str) -> None:
     """Delete a product from Printify (e.g. draft cleanup)."""
     async with _client() as c:

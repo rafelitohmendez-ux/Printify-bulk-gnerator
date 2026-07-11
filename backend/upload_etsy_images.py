@@ -23,6 +23,7 @@ Usage:
 """
 import argparse
 import asyncio
+import html
 import json
 import os
 import re
@@ -183,11 +184,11 @@ def match_etsy_listing(product: Dict[str, Any], listings: List[Dict[str, Any]]) 
         return candidates[0]
 
     if len(candidates) > 1:
-        product_back_concept = extract_back_concept(product.get("description") or "")
+        product_back_concept = html.unescape(extract_back_concept(product.get("description") or ""))
         if product_back_concept:
             back_concept_matches = [
                 listing for listing in candidates
-                if extract_back_concept(listing.get("description") or "") == product_back_concept
+                if html.unescape(extract_back_concept(listing.get("description") or "")) == product_back_concept
             ]
             if len(back_concept_matches) == 1:
                 return back_concept_matches[0]
