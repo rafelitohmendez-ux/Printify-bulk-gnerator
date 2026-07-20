@@ -164,6 +164,16 @@ DEFAULT_THEMES: List[Dict[str, str]] = [
     {"key": "diesel_punk_relic", "name": "Diesel Punk Relic", "prompt": "diesel engine worship, petroleum liturgy, oil slick sacred geometry, industrial fuel ritual"},
 ]
 
+NICHE_THEME_KEYS = {
+    "religious_industrial",
+    "brutalist_cathedral",
+    "monastic_factory",
+    "occult_austerity",
+    "hydraulic_crucifixion",
+    "rusted_shrine",
+    "iron_prayer",
+}
+
 # App + router
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -238,6 +248,8 @@ class SettingsDoc(BaseModel):
     printify_shop_id: Optional[int] = None
     printify_print_provider_id: Optional[int] = None
     printify_auto_push: bool = False
+    # Fraction of auto-mode generations biased toward NICHE_THEME_KEYS vs. the broader pool
+    niche_weight: float = 0.7
     # Anti-repetition state (internal, not user-configurable)
     recently_used_themes: List[str] = Field(default_factory=list)
 
@@ -250,6 +262,7 @@ class SettingsUpdate(BaseModel):
     printify_shop_id: Optional[int] = None
     printify_print_provider_id: Optional[int] = None
     printify_auto_push: Optional[bool] = None
+    niche_weight: Optional[float] = None
 
 
 class ApprovePayload(BaseModel):
@@ -338,9 +351,15 @@ def resolve_theme(settings: dict) -> dict:
         for t in all_themes:
             if t["key"] == active or t["name"].lower() == active.lower():
                 return t
-    # auto mode: prefer themes not recently used; fall back to full pool only when all exhausted
-    fresh = [t for t in all_themes if t["key"] not in recently_used]
-    return random.choice(fresh if fresh else all_themes)
+    # auto mode: bias toward the niche pool, then prefer themes not recently used
+    niche_weight = settings.get("niche_weight")
+    niche_weight = 0.7 if niche_weight is None else max(0.0, min(1.0, float(niche_weight)))
+    want_niche = random.random() < niche_weight
+    pool = [t for t in all_themes if (t["key"] in NICHE_THEME_KEYS) == want_niche]
+    if not pool:
+        pool = all_themes
+    fresh = [t for t in pool if t["key"] not in recently_used]
+    return random.choice(fresh if fresh else (pool if pool else all_themes))
 
 
 # -----------------------------
@@ -876,6 +895,8 @@ async def get_settings_endpoint():
         "printify_print_provider_id": s.get("printify_print_provider_id"),
         "printify_auto_push": bool(s.get("printify_auto_push")),
         "printify_token_configured": bool(os.environ.get("PRINTIFY_API_TOKEN")),
+        "niche_weight": s.get("niche_weight") if s.get("niche_weight") is not None else 0.7,
+        "niche_theme_keys": sorted(NICHE_THEME_KEYS),
     }
 
 
@@ -894,6 +915,9 @@ async def update_settings(payload: SettingsUpdate, _: None = Depends(require_adm
         flush_queue = True
     if payload.queue_size is not None:
         update["queue_size"] = max(0, min(20, int(payload.queue_size)))
+    if payload.niche_weight is not None:
+        update["niche_weight"] = max(0.0, min(1.0, float(payload.niche_weight)))
+        flush_queue = True
     if payload.printify_shop_id is not None:
         update["printify_shop_id"] = int(payload.printify_shop_id) if payload.printify_shop_id else None
     if payload.printify_print_provider_id is not None:
