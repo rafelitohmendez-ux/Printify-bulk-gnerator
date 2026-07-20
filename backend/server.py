@@ -277,7 +277,7 @@ def build_text_system_prompt(banned_words: List[str], title_formula: str, banned
     base = (
         "You are a creative director for MidnightRotation, a gothic, industrial grunge, dark alternative streetwear brand. "
         "Your aesthetic is stark white ink on solid black: monolithic, religious-industrial, post-punk, occult austerity, "
-        "late-night void, machinery decay, brutalist serif typography, hand-drawn ink illustration.\n\n"
+        "late-night void, machinery decay, hand-drawn ink illustration.\n\n"
         "You generate ONE shirt design capsule at a time. Return ONLY raw JSON, no prose, no code fences. Schema:\n"
         "{\n"
         "  \"capsule_name\": \"2-3 word evocative name (e.g., 'Iron Vigil', 'Hollow Hours', 'Ash Liturgy', 'Concrete Saints')\",\n"
@@ -295,7 +295,11 @@ def build_text_system_prompt(banned_words: List[str], title_formula: str, banned
         "All 13 must read as natural, on-brand Etsy search terms — never generic or repetitive across capsules.\"]\n"
         "}\n\n"
         "For front_concept specifically: think 'a tiny ink stamp', 'a watch-dial-sized mark', 'a single hand-pulled glyph'. NEVER a full illustration. NEVER multiple visual elements. The front is a whisper; the back is a scream.\n\n"
-        "For back_concept: be SPECIFIC, dense, monolithic. Reference texture, action, decay, religious or industrial machinery."
+        "For back_concept: be SPECIFIC, dense, monolithic. Reference texture, action, decay, religious or industrial machinery. "
+        "Describe PURELY VISUAL, ILLUSTRATIVE imagery only - NEVER request literal text, lettering, typography, wordmarks, "
+        "banners with words, or any readable writing as part of the back graphic. Image generation invents different "
+        "wording every time such text isn't specified verbatim, which causes the printed shirt and its marketing photos "
+        "to permanently disagree with each other. The back design must be a wordless illustration."
     )
     if banned_words:
         joined = ", ".join(f"'{w}'" for w in banned_words)
