@@ -96,6 +96,14 @@ SEO_TITLE_FORMULAS = [
     "{capsule_name} - {theme_hint} Oversized Tee | Gothic Industrial | Dark Alt Streetwear Shirt",
 ]
 
+# Used instead of SEO_TITLE_FORMULAS when the theme's category is "cyber"
+CYBER_SEO_TITLE_FORMULAS = [
+    "{capsule_name} | Cyber Goth Back Print Tee | {theme_hint} | Industrial Techno Streetwear",
+    "{capsule_name} - Cybergoth Oversized Tee | {theme_hint} Graphic | Techwear Gothic Shirt",
+    "{capsule_name} Tee | Cyberpunk Gothic Back Print | {theme_hint} | Dark Techwear Unisex",
+    "{capsule_name} - {theme_hint} Cyber Goth Shirt | Industrial Techno Rave Tee | Back Print",
+]
+
 # Words pulled from the theme prompt to slot into {theme_hint} so titles
 # differentiate by actual design content instead of repeating a fixed phrase.
 THEME_HINT_OVERRIDES = {
@@ -129,41 +137,68 @@ THEME_HINT_OVERRIDES = {
     "deep_sea_gothic": "Deep Sea Gothic",
     "cyber_mortuary": "Cyber Mortuary",
     "diesel_punk_relic": "Diesel Punk Relic",
+    "gas_mask_rave": "Gas Mask Rave",
+    "circuit_sigils": "Circuit Sigil",
+    "server_cathedral": "Server Cathedral",
+    "glitch_saints": "Glitch Saint",
+    "neural_crown": "Neural Crown",
+    "data_corruption": "Data Corruption",
+    "dead_pixel_void": "Dead Pixel",
+    "terminal_liturgy": "Terminal Liturgy",
+    "chrome_reliquary": "Chrome Reliquary",
+    "wired_angel": "Wired Angel",
+    "biohazard_regalia": "Biohazard",
+    "null_signal_shrine": "Null Signal",
 }
 
 # Built-in theme pool
 DEFAULT_THEMES: List[Dict[str, str]] = [
-    {"key": "religious_industrial", "name": "Religious Industrial Decay", "prompt": "religious-industrial decay, crucifixion machinery, divine rust"},
-    {"key": "post_punk_machinery", "name": "Post-Punk Machinery", "prompt": "post-punk machinery, broken assembly lines, factory sermons"},
-    {"key": "occult_austerity", "name": "Occult Austerity", "prompt": "occult austerity, austere ritual minimalism, monastic darkness"},
-    {"key": "brutalist_cathedral", "name": "Brutalist Cathedral", "prompt": "brutalist cathedral architecture, concrete reliquary, monolithic sacred geometry"},
-    {"key": "rusted_shrine", "name": "Rusted Shrine", "prompt": "rusted shrine, iron offerings, oxidized devotion"},
-    {"key": "hydraulic_crucifixion", "name": "Hydraulic Crucifixion", "prompt": "hydraulic crucifixion, mechanical martyrdom, piston-driven sacrament"},
-    {"key": "monastic_factory", "name": "Monastic Factory", "prompt": "monastic factory, robe-clad assembly, gothic industrialization"},
-    {"key": "iron_prayer", "name": "Iron Prayer", "prompt": "iron prayer, forged liturgy, blacksmith devotion"},
-    {"key": "late_night_void", "name": "Late-Night Void", "prompt": "late-night void, 3 AM emptiness, nocturnal liminality"},
-    {"key": "y2k_gothic", "name": "Y2K Gothic", "prompt": "Y2K gothic, millennium dread, lo-fi cyber decay"},
-    {"key": "techno_gothic", "name": "Techno Gothic", "prompt": "techno-gothic, cybernetic mysticism, electronic seance"},
-    {"key": "abandoned_chapel", "name": "Abandoned Chapel", "prompt": "abandoned chapel, derelict sanctuary, forgotten worship"},
-    {"key": "concrete_saints", "name": "Concrete Saints", "prompt": "concrete saints, brutalist iconography, cast-stone reverence"},
-    {"key": "ash_liturgy", "name": "Ash Liturgy", "prompt": "ash liturgy, burnt ritual remains, cinder communion"},
-    {"key": "neon_mortuary", "name": "Neon Mortuary", "prompt": "neon mortuary, electric wake, fluorescent funeral"},
-    {"key": "wire_crown", "name": "Wire Crown", "prompt": "wire crown, barbed regalia, industrial coronation"},
-    {"key": "graveyard_assembly", "name": "Graveyard Assembly", "prompt": "graveyard assembly line, factory of the dead, mechanized mourning"},
-    {"key": "post_mortem_mechanics", "name": "Post-Mortem Mechanics", "prompt": "post-mortem mechanics, autopsy machinery, surgical liturgy"},
-    {"key": "dark_americana", "name": "Dark Americana", "prompt": "dark americana decay, rural gothic, rusted crosses, grain silo cathedral, tobacco barn sermon"},
-    {"key": "digital_decay", "name": "Digital Decay", "prompt": "digital decay, corrupted circuit liturgy, server rack altar, machine consciousness, AI as false god"},
-    {"key": "plague_gothic", "name": "Plague Gothic", "prompt": "plague doctor ritual, memento mori, bone architecture, apothecary altar, medieval death aesthetic"},
-    {"key": "brutalist_shrine", "name": "Brutalist Shrine", "prompt": "brutalist shrine, raw concrete sacred space, Soviet monument worship, cast iron devotion"},
-    {"key": "storm_liturgy", "name": "Storm Liturgy", "prompt": "storm liturgy, lightning as divine punishment, tornado sacrament, flood baptism, weather as god"},
-    {"key": "asylum_plague", "name": "Asylum Plague", "prompt": "plague asylum, abandoned sanitarium decay, plague doctor ward, crumbling medical gothic, quarantine ritual, infected institution"},
-    {"key": "bone_church", "name": "Bone Church", "prompt": "ossuary architecture, bone church, catacombs altar, skeleton liturgy, reliquary decay, death chapel"},
-    {"key": "crow_sermon", "name": "Crow Sermon", "prompt": "corvid death omen, plague crow messenger, black feather ritual, raven sermon, crow death cult"},
-    {"key": "folk_horror", "name": "Folk Horror", "prompt": "wicker effigy, harvest ritual, rural cult ceremony, folk horror sacrifice, pagan industrial decay"},
-    {"key": "deep_sea_gothic", "name": "Deep Sea Gothic", "prompt": "abyssal pressure ritual, drowned cathedral, bioluminescent decay, deep ocean altar, sunken church"},
-    {"key": "cyber_mortuary", "name": "Cyber Mortuary", "prompt": "digital afterlife, server room funeral, LED mourning ritual, cyber death, data tomb"},
-    {"key": "diesel_punk_relic", "name": "Diesel Punk Relic", "prompt": "diesel engine worship, petroleum liturgy, oil slick sacred geometry, industrial fuel ritual"},
+    {"key": "religious_industrial", "name": "Religious Industrial Decay", "prompt": "religious-industrial decay, crucifixion machinery, divine rust", "category": "gothic"},
+    {"key": "post_punk_machinery", "name": "Post-Punk Machinery", "prompt": "post-punk machinery, broken assembly lines, factory sermons", "category": "gothic"},
+    {"key": "occult_austerity", "name": "Occult Austerity", "prompt": "occult austerity, austere ritual minimalism, monastic darkness", "category": "gothic"},
+    {"key": "brutalist_cathedral", "name": "Brutalist Cathedral", "prompt": "brutalist cathedral architecture, concrete reliquary, monolithic sacred geometry", "category": "gothic"},
+    {"key": "rusted_shrine", "name": "Rusted Shrine", "prompt": "rusted shrine, iron offerings, oxidized devotion", "category": "gothic"},
+    {"key": "hydraulic_crucifixion", "name": "Hydraulic Crucifixion", "prompt": "hydraulic crucifixion, mechanical martyrdom, piston-driven sacrament", "category": "gothic"},
+    {"key": "monastic_factory", "name": "Monastic Factory", "prompt": "monastic factory, robe-clad assembly, gothic industrialization", "category": "gothic"},
+    {"key": "iron_prayer", "name": "Iron Prayer", "prompt": "iron prayer, forged liturgy, blacksmith devotion", "category": "gothic"},
+    {"key": "late_night_void", "name": "Late-Night Void", "prompt": "late-night void, 3 AM emptiness, nocturnal liminality", "category": "gothic"},
+    {"key": "y2k_gothic", "name": "Y2K Gothic", "prompt": "Y2K gothic, millennium dread, lo-fi cyber decay", "category": "cyber"},
+    {"key": "techno_gothic", "name": "Techno Gothic", "prompt": "techno-gothic, cybernetic mysticism, electronic seance", "category": "cyber"},
+    {"key": "abandoned_chapel", "name": "Abandoned Chapel", "prompt": "abandoned chapel, derelict sanctuary, forgotten worship", "category": "gothic"},
+    {"key": "concrete_saints", "name": "Concrete Saints", "prompt": "concrete saints, brutalist iconography, cast-stone reverence", "category": "gothic"},
+    {"key": "ash_liturgy", "name": "Ash Liturgy", "prompt": "ash liturgy, burnt ritual remains, cinder communion", "category": "gothic"},
+    {"key": "neon_mortuary", "name": "Neon Mortuary", "prompt": "neon mortuary, electric wake, fluorescent funeral", "category": "cyber"},
+    {"key": "wire_crown", "name": "Wire Crown", "prompt": "wire crown, barbed regalia, industrial coronation", "category": "gothic"},
+    {"key": "graveyard_assembly", "name": "Graveyard Assembly", "prompt": "graveyard assembly line, factory of the dead, mechanized mourning", "category": "gothic"},
+    {"key": "post_mortem_mechanics", "name": "Post-Mortem Mechanics", "prompt": "post-mortem mechanics, autopsy machinery, surgical liturgy", "category": "gothic"},
+    {"key": "dark_americana", "name": "Dark Americana", "prompt": "dark americana decay, rural gothic, rusted crosses, grain silo cathedral, tobacco barn sermon", "category": "gothic"},
+    {"key": "digital_decay", "name": "Digital Decay", "prompt": "digital decay, corrupted circuit liturgy, server rack altar, machine consciousness, AI as false god", "category": "cyber"},
+    {"key": "plague_gothic", "name": "Plague Gothic", "prompt": "plague doctor ritual, memento mori, bone architecture, apothecary altar, medieval death aesthetic", "category": "gothic"},
+    {"key": "brutalist_shrine", "name": "Brutalist Shrine", "prompt": "brutalist shrine, raw concrete sacred space, Soviet monument worship, cast iron devotion", "category": "gothic"},
+    {"key": "storm_liturgy", "name": "Storm Liturgy", "prompt": "storm liturgy, lightning as divine punishment, tornado sacrament, flood baptism, weather as god", "category": "gothic"},
+    {"key": "asylum_plague", "name": "Asylum Plague", "prompt": "plague asylum, abandoned sanitarium decay, plague doctor ward, crumbling medical gothic, quarantine ritual, infected institution", "category": "gothic"},
+    {"key": "bone_church", "name": "Bone Church", "prompt": "ossuary architecture, bone church, catacombs altar, skeleton liturgy, reliquary decay, death chapel", "category": "gothic"},
+    {"key": "crow_sermon", "name": "Crow Sermon", "prompt": "corvid death omen, plague crow messenger, black feather ritual, raven sermon, crow death cult", "category": "gothic"},
+    {"key": "folk_horror", "name": "Folk Horror", "prompt": "wicker effigy, harvest ritual, rural cult ceremony, folk horror sacrifice, pagan industrial decay", "category": "gothic"},
+    {"key": "deep_sea_gothic", "name": "Deep Sea Gothic", "prompt": "abyssal pressure ritual, drowned cathedral, bioluminescent decay, deep ocean altar, sunken church", "category": "gothic"},
+    {"key": "cyber_mortuary", "name": "Cyber Mortuary", "prompt": "digital afterlife, server room funeral, LED mourning ritual, cyber death, data tomb", "category": "cyber"},
+    {"key": "diesel_punk_relic", "name": "Diesel Punk Relic", "prompt": "diesel engine worship, petroleum liturgy, oil slick sacred geometry, industrial fuel ritual", "category": "gothic"},
+    {"key": "gas_mask_rave", "name": "Gas-Mask Rave", "prompt": "gas-mask ravers, respirator congregation, strobe-lit warehouse ritual, industrial techno mass", "category": "cyber"},
+    {"key": "circuit_sigils", "name": "Circuit Sigils", "prompt": "circuit-board sigils, PCB trace occult geometry, solder-point pentacles, silicon grimoire", "category": "cyber"},
+    {"key": "server_cathedral", "name": "Server-Room Cathedral", "prompt": "server-room cathedral, rack-mounted altar, cable bundles as gothic vault ribs, cooling-fan rose window", "category": "cyber"},
+    {"key": "glitch_saints", "name": "Glitch Saints", "prompt": "glitch saints, corrupted halo, pixel-sorted martyr icon, scanline stigmata", "category": "cyber"},
+    {"key": "neural_crown", "name": "Neural Interface Crown", "prompt": "neural interface crown, electrode thorn halo, wired skull diadem, cybernetic coronation", "category": "cyber"},
+    {"key": "data_corruption", "name": "Data Corruption", "prompt": "data corruption, fragmenting machine relic, bit-rot decay, shattered hard-drive platters", "category": "cyber"},
+    {"key": "dead_pixel_void", "name": "Dead-Pixel Void", "prompt": "dead-pixel void, burnt-out CRT abyss, lone surviving pixel in darkness, scanline afterglow", "category": "cyber"},
+    {"key": "terminal_liturgy", "name": "Terminal Liturgy", "prompt": "terminal liturgy, blinking-cursor altar, CRT monitor shrine, abstract code-glyph ornament", "category": "cyber"},
+    {"key": "chrome_reliquary", "name": "Chrome Reliquary", "prompt": "chrome reliquary, cybernetic heart in a machined shrine, techno-sacred metalwork, polished bio-mechanical relic", "category": "cyber"},
+    {"key": "wired_angel", "name": "Wired Angel", "prompt": "wired angel, cable-veined wings, fiber-optic halo, cybernetic seraph", "category": "cyber"},
+    {"key": "biohazard_regalia", "name": "Biohazard Regalia", "prompt": "biohazard regalia, hazmat royalty, respirator crown, toxic-sigil heraldry", "category": "cyber"},
+    {"key": "null_signal_shrine", "name": "Null-Signal Shrine", "prompt": "null-signal shrine, dead antenna array, static-noise altar, broken transmission tower worship", "category": "cyber"},
 ]
+
+# Fraction of auto-mode picks drawn from the cyber category (rest come from gothic)
+CYBER_THEME_WEIGHT = 0.6
 
 NICHE_THEME_KEYS = {
     "religious_industrial",
@@ -289,9 +324,13 @@ Care Instructions: Machine wash cold, inside out, with like colors. Tumble dry l
 
 def build_text_system_prompt(banned_words: List[str], title_formula: str, banned_names: Optional[List[str]] = None) -> str:
     base = (
-        "You are a creative director for MidnightRotation, a gothic, industrial grunge, dark alternative streetwear brand. "
+        "You are a creative director for MidnightRotation, a gothic, industrial grunge, dark alternative streetwear brand "
+        "that leans cyber goth. "
         "Your aesthetic is stark white ink on solid black: monolithic, religious-industrial, post-punk, occult austerity, "
-        "late-night void, machinery decay, hand-drawn ink illustration.\n\n"
+        "late-night void, machinery decay, hand-drawn ink illustration - fused with cyber goth: cybernetics, circuitry, "
+        "glitch, data decay, industrial-techno/rave energy, machine-occult. "
+        "When the seed theme allows it, blend in a cyber/tech element (circuit linework, cables, respirators, cybernetic "
+        "implants, glitch artifacts, screens) without losing the gothic core.\n\n"
         "You generate ONE shirt design capsule at a time. Return ONLY raw JSON, no prose, no code fences. Schema:\n"
         "{\n"
         "  \"capsule_name\": \"2-3 word evocative name (e.g., 'Iron Vigil', 'Hollow Hours', 'Ash Liturgy', 'Concrete Saints')\",\n"
@@ -313,7 +352,10 @@ def build_text_system_prompt(banned_words: List[str], title_formula: str, banned
         "Describe PURELY VISUAL, ILLUSTRATIVE imagery only - NEVER request literal text, lettering, typography, wordmarks, "
         "banners with words, or any readable writing as part of the back graphic. Image generation invents different "
         "wording every time such text isn't specified verbatim, which causes the printed shirt and its marketing photos "
-        "to permanently disagree with each other. The back design must be a wordless illustration."
+        "to permanently disagree with each other. The back design must be a wordless illustration.\n\n"
+        "For tags: of the 11 tags beyond 'Gothic Streetwear' and 'Back Print Shirt', make at least 2-3 cyber goth search "
+        "terms when they fit the design (e.g. 'Cyber Goth Shirt', 'Cybergoth Clothing', 'Cyberpunk Tee', 'Techwear Shirt', "
+        "'Industrial Techno', 'Rave Goth Tee'). Still return EXACTLY 13 tags."
     )
     if banned_words:
         joined = ", ".join(f"'{w}'" for w in banned_words)
@@ -336,6 +378,50 @@ async def get_settings() -> dict:
     return doc
 
 
+def theme_category(theme: dict) -> str:
+    """'cyber' or 'gothic'. Custom themes are gothic unless their name/prompt mentions cyber."""
+    if theme.get("category"):
+        return theme["category"]
+    text = f"{theme.get('name', '')} {theme.get('prompt', '')}".lower()
+    return "cyber" if "cyber" in text else "gothic"
+
+
+def title_formulas_for(category: str) -> List[str]:
+    return CYBER_SEO_TITLE_FORMULAS if category == "cyber" else SEO_TITLE_FORMULAS
+
+
+def default_theme_hint(category: str) -> str:
+    """{theme_hint} for themes without a THEME_HINT_OVERRIDES entry (e.g. custom themes)."""
+    return "Cyber Goth" if category == "cyber" else "Industrial Gothic"
+
+
+def record_theme_use(recently_used: List[str], key: str) -> List[str]:
+    """Append key to the anti-repeat window and trim it."""
+    recent = list(recently_used or [])
+    if key not in recent:
+        recent.append(key)
+    keep = max(len(DEFAULT_THEMES) // 2, 5)
+    return recent[-keep:]
+
+
+def _pick_fresh(pool: List[dict], recently_used: set, niche_weight: Optional[float] = None) -> Optional[dict]:
+    """Random theme from pool that isn't recently used, or None if the pool is exhausted.
+
+    With niche_weight, first try the NICHE_THEME_KEYS subset (or the rest) per that weight.
+    """
+    subpools = [pool]
+    if niche_weight is not None:
+        want_niche = random.random() < niche_weight
+        preferred = [t for t in pool if (t["key"] in NICHE_THEME_KEYS) == want_niche]
+        others = [t for t in pool if (t["key"] in NICHE_THEME_KEYS) != want_niche]
+        subpools = [preferred, others]
+    for sub in subpools:
+        fresh = [t for t in sub if t["key"] not in recently_used]
+        if fresh:
+            return random.choice(fresh)
+    return None
+
+
 def resolve_theme(settings: dict) -> dict:
     """Return chosen theme {key/name, prompt} based on settings, avoiding recent repeats in auto mode."""
     active = (settings.get("active_theme") or "auto").strip()
@@ -352,23 +438,32 @@ def resolve_theme(settings: dict) -> dict:
         for t in all_themes:
             if t["key"] == active or t["name"].lower() == active.lower():
                 return t
-    # auto mode: bias toward the niche pool, then prefer themes not recently used
+    # auto mode: pick cyber ~CYBER_THEME_WEIGHT of the time, else gothic (where the
+    # niche ecclesiastical pool is still favored by niche_weight). Prefer themes not
+    # recently used; if a category has none fresh, fall back to the other category.
     niche_weight = settings.get("niche_weight")
     niche_weight = 0.7 if niche_weight is None else max(0.0, min(1.0, float(niche_weight)))
-    want_niche = random.random() < niche_weight
-    pool = [t for t in all_themes if (t["key"] in NICHE_THEME_KEYS) == want_niche]
-    if not pool:
-        pool = all_themes
-    fresh = [t for t in pool if t["key"] not in recently_used]
-    return random.choice(fresh if fresh else (pool if pool else all_themes))
+    cyber = [t for t in all_themes if theme_category(t) == "cyber"]
+    gothic = [t for t in all_themes if theme_category(t) == "gothic"]
+    if random.random() < CYBER_THEME_WEIGHT:
+        order = [(cyber, None), (gothic, niche_weight)]
+    else:
+        order = [(gothic, niche_weight), (cyber, None)]
+    for pool, weight in order:
+        pick = _pick_fresh(pool, recently_used, weight)
+        if pick:
+            return pick
+    # Everything recently used: repeat from the preferred category
+    pool = order[0][0] or order[1][0]
+    return random.choice(pool)
 
 
 # -----------------------------
 # AI generation
 # -----------------------------
-async def llm_generate_text(theme_prompt: str, banned_words: List[str], banned_names: Optional[List[str]] = None, theme_key: Optional[str] = None) -> dict:
-    raw_formula = random.choice(SEO_TITLE_FORMULAS)
-    theme_hint = THEME_HINT_OVERRIDES.get(theme_key or "", "Industrial Gothic")
+async def llm_generate_text(theme_prompt: str, banned_words: List[str], banned_names: Optional[List[str]] = None, theme_key: Optional[str] = None, category: str = "gothic") -> dict:
+    raw_formula = random.choice(title_formulas_for(category))
+    theme_hint = THEME_HINT_OVERRIDES.get(theme_key or "", default_theme_hint(category))
     # Bake theme_hint in now so titles differentiate by actual theme content;
     # {capsule_name} is left as a literal placeholder for the LLM to fill in.
     title_formula = raw_formula.replace("{theme_hint}", theme_hint)
@@ -399,7 +494,10 @@ async def llm_generate_text(theme_prompt: str, banned_words: List[str], banned_n
 
 
 async def llm_generate_image(prompt: str) -> Optional[str]:
-    STYLE_PREFIX = "You are an expert graphic designer producing stark white-ink-on-black gothic streetwear print graphics. "
+    STYLE_PREFIX = (
+        "You are an expert graphic designer producing stark white-ink-on-black gothic industrial and cyber goth "
+        "streetwear print graphics. Pure white on #000000 only, no color. "
+    )
     try:
         response = await asyncio.to_thread(
             genai_client.models.generate_content,
@@ -441,7 +539,8 @@ def build_back_prompt(back_concept: str) -> str:
         f"Stark pure white ink illustration on a 100% pure pitch-black (#000000) background. "
         f"Subject: {back_concept}. "
         f"Style: bold gothic industrial streetwear, dramatic high-contrast monochrome, "
-        f"detailed silkscreen-print engraving, religious-industrial decay aesthetic, monolithic composition. "
+        f"detailed silkscreen-print engraving, gothic industrial and cyber goth aesthetic: engraving detail, "
+        f"circuit linework, glitch artifacts where fitting, monolithic composition. Pure white only, no color. "
         f"Fills nearly the entire canvas. NO shirt mockup, NO model, NO text watermark - only the white-on-black graphic asset itself. Square 1:1."
     )
 
@@ -449,14 +548,13 @@ def build_back_prompt(back_concept: str) -> str:
 async def _generate_capsule(settings: dict) -> Capsule:
     theme = resolve_theme(settings)
 
+    category = theme_category(theme)
+
     # Record theme usage so resolve_theme() can avoid it next time
-    recent_themes = list(settings.get("recently_used_themes") or [])
-    if theme["key"] not in recent_themes:
-        recent_themes.append(theme["key"])
-    keep = max(len(DEFAULT_THEMES) // 2, 5)
+    recent_themes = record_theme_use(settings.get("recently_used_themes") or [], theme["key"])
     await settings_coll.update_one(
         {"id": "config"},
-        {"$set": {"recently_used_themes": recent_themes[-keep:]}},
+        {"$set": {"recently_used_themes": recent_themes}},
         upsert=True,
     )
 
@@ -472,6 +570,7 @@ async def _generate_capsule(settings: dict) -> Capsule:
         settings.get("banned_words") or [],
         banned_names=recent_names,
         theme_key=theme.get("key"),
+        category=category,
     )
     capsule_name = text_data.get("capsule_name", "Unnamed Capsule")
     front_concept = text_data.get("front_concept", "")
@@ -484,10 +583,10 @@ async def _generate_capsule(settings: dict) -> Capsule:
         capsule_name=capsule_name.upper(),
         back_graphic=back_concept.rstrip(".").lower(),
     )
-    fallback_hint = THEME_HINT_OVERRIDES.get(theme.get("key") or "", "Industrial Gothic")
+    fallback_hint = THEME_HINT_OVERRIDES.get(theme.get("key") or "", default_theme_hint(category))
     return Capsule(
         capsule_name=capsule_name,
-        title=text_data.get("title") or random.choice(SEO_TITLE_FORMULAS).format(
+        title=text_data.get("title") or random.choice(title_formulas_for(category)).format(
             capsule_name=capsule_name, theme_hint=fallback_hint
         ),
         description=description,
