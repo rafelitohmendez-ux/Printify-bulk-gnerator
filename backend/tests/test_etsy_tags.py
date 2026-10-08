@@ -144,7 +144,7 @@ def test_approve_auto_push_filters_seo_tags_sent_to_printify(mock_db, monkeypatc
     async def fake_push(**kw):
         return {"id": "pid123"}
 
-    async def fake_seo(name, concept):
+    async def fake_seo(name, concept, overused_words=None):
         return {"title": "New Title", "tags": ["Gothic Streetwear", LONG, "Rave Goth Tee", "rave goth tee"]}
 
     async def fake_update(shop_id, pid, body):

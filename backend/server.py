@@ -47,6 +47,8 @@ from printify_client import (
     update_product,
 )
 from bulk_seo_update import generate_seo
+from title_words import RECENT_TITLES_WINDOW, find_overused_words, overused_words_instruction
+from title_words import words as title_word_list
 import etsy_photos
 
 ROOT_DIR = Path(__file__).parent
@@ -104,6 +106,11 @@ CYBER_SEO_TITLE_FORMULAS = [
     "{capsule_name} Tee | Cyberpunk Gothic Back Print | {theme_hint} | Dark Techwear Unisex",
     "{capsule_name} - {theme_hint} Cyber Goth Shirt | Industrial Techno Rave Tee | Back Print",
 ]
+
+# Words baked into the title formulas repeat by design; never flag them as overused
+FORMULA_WORDS = {
+    w for f in SEO_TITLE_FORMULAS + CYBER_SEO_TITLE_FORMULAS for w in title_word_list(re.sub(r"\{\w+\}", " ", f))
+}
 
 # Words pulled from the theme prompt to slot into {theme_hint} so titles
 # differentiate by actual design content instead of repeating a fixed phrase.
@@ -336,7 +343,12 @@ A premium, heavy-hitting alternative staple designed for the late-night rotation
 Care Instructions: Machine wash cold, inside out, with like colors. Tumble dry low or hang dry to preserve print longevity."""
 
 
-def build_text_system_prompt(banned_words: List[str], title_formula: str, banned_names: Optional[List[str]] = None) -> str:
+def build_text_system_prompt(
+    banned_words: List[str],
+    title_formula: str,
+    banned_names: Optional[List[str]] = None,
+    overused_words: Optional[List[str]] = None,
+) -> str:
     base = (
         "You are a creative director for MidnightRotation, a gothic, industrial grunge, dark alternative streetwear brand "
         "that leans cyber goth. "
@@ -378,6 +390,8 @@ def build_text_system_prompt(banned_words: List[str], title_formula: str, banned
     if banned_names:
         joined_names = ", ".join(f'"{n}"' for n in banned_names[:15])
         base += f"\n\nDO NOT reuse any of these recently-generated capsule names: {joined_names}. The capsule_name you return must be completely distinct from all of these."
+    if overused_words:
+        base += "\n\n" + overused_words_instruction(overused_words) + " This applies to the capsule_name and title."
     return base
 
 
@@ -500,13 +514,13 @@ def resolve_theme(settings: dict) -> dict:
 # -----------------------------
 # AI generation
 # -----------------------------
-async def llm_generate_text(theme_prompt: str, banned_words: List[str], banned_names: Optional[List[str]] = None, theme_key: Optional[str] = None, category: str = "gothic") -> dict:
+async def llm_generate_text(theme_prompt: str, banned_words: List[str], banned_names: Optional[List[str]] = None, theme_key: Optional[str] = None, category: str = "gothic", overused_words: Optional[List[str]] = None) -> dict:
     raw_formula = random.choice(title_formulas_for(category))
     theme_hint = THEME_HINT_OVERRIDES.get(theme_key or "", default_theme_hint(category))
     # Bake theme_hint in now so titles differentiate by actual theme content;
     # {capsule_name} is left as a literal placeholder for the LLM to fill in.
     title_formula = raw_formula.replace("{theme_hint}", theme_hint)
-    system_prompt = build_text_system_prompt(banned_words, title_formula, banned_names)
+    system_prompt = build_text_system_prompt(banned_words, title_formula, banned_names, overused_words)
     ban_hint = ""
     if banned_words:
         ban_hint = f" Avoid words: {', '.join(banned_words)}."
@@ -592,12 +606,15 @@ async def _generate_capsule(settings: dict) -> Capsule:
         upsert=True,
     )
 
-    # Fetch recent capsule names to steer Gemini away from name collisions
+    # Fetch recent capsules to steer Gemini away from name collisions and overused title words
     recent_docs = await capsules_coll.find(
         {"capsule_name": {"$exists": True}},
-        {"capsule_name": 1, "_id": 0},
-    ).sort("created_at", -1).limit(15).to_list(15)
-    recent_names = [d["capsule_name"] for d in recent_docs if d.get("capsule_name")]
+        {"capsule_name": 1, "title": 1, "_id": 0},
+    ).sort("created_at", -1).limit(RECENT_TITLES_WINDOW).to_list(RECENT_TITLES_WINDOW)
+    recent_names = [d["capsule_name"] for d in recent_docs[:15] if d.get("capsule_name")]
+    overused = find_overused_words([d.get("title") or "" for d in recent_docs], extra_exclude=FORMULA_WORDS)
+    if overused:
+        logger.info(f"Overused title words this round: {', '.join(overused)}")
 
     text_data = await llm_generate_text(
         theme["prompt"],
@@ -605,6 +622,7 @@ async def _generate_capsule(settings: dict) -> Capsule:
         banned_names=recent_names,
         theme_key=theme.get("key"),
         category=category,
+        overused_words=overused,
     )
     capsule_name = text_data.get("capsule_name", "Unnamed Capsule")
     front_concept = text_data.get("front_concept", "")
@@ -842,6 +860,7 @@ async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = N
                     seo = await generate_seo(
                         full.get("capsule_name") or "",
                         full.get("back_concept") or "",
+                        overused_words=await recent_seo_overused_words(exclude_id=capsule_id),
                     )
                     if seo:
                         new_title = seo.get("title", "")[:140]
@@ -855,6 +874,8 @@ async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = N
                             "tags": new_tags,
                             "description": new_desc,
                         })
+                        # The live listing title; feeds the next overused-word check
+                        await capsules_coll.update_one({"id": capsule_id}, {"$set": {"seo_title": new_title}})
                     await prioritize_back_mockup(shop_id, pid)
                     await publish_product(shop_id, pid)
                     logger.info(f"Published capsule {capsule_id} (Printify product {pid}) live to Etsy")
@@ -884,6 +905,15 @@ async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = N
         {"_id": 0, "front_image_b64": 0, "back_image_b64": 0},
     )
     return CapsulePublic(**doc)
+
+
+async def recent_seo_overused_words(exclude_id: Optional[str] = None) -> List[str]:
+    """Overused words across the live (SEO) titles of the most recently approved capsules."""
+    docs = await capsules_coll.find(
+        {"status": "approved", "id": {"$ne": exclude_id}},
+        {"seo_title": 1, "title": 1, "_id": 0},
+    ).sort("approved_at", -1).limit(RECENT_TITLES_WINDOW).to_list(RECENT_TITLES_WINDOW)
+    return find_overused_words([d.get("seo_title") or d.get("title") or "" for d in docs], extra_exclude=FORMULA_WORDS)
 
 
 # -----------------------------

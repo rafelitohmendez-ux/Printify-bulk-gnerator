@@ -26,6 +26,8 @@ from google.genai import types
 
 sys.path.insert(0, str(Path(__file__).parent))
 from printify_client import get_product, list_products, update_product, prioritize_back_mockup, PrintifyError  # noqa: E402
+from title_words import RECENT_TITLES_WINDOW, find_overused_words, overused_words_instruction  # noqa: E402
+from title_words import words as title_words  # noqa: E402
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -94,13 +96,23 @@ def extract_capsule_name(title: str) -> str:
     return name
 
 
-async def generate_seo(capsule_name: str, back_concept: str) -> Optional[Dict[str, Any]]:
-    """Call Gemini to generate improved title and tags."""
+async def generate_seo(
+    capsule_name: str, back_concept: str, overused_words: Optional[List[str]] = None
+) -> Optional[Dict[str, Any]]:
+    """Call Gemini to generate improved title and tags.
+
+    overused_words: words recent titles keep repeating; the title is asked to avoid
+    them (except where they're part of the capsule name, which the title must start with).
+    """
     prompt = (
         f"Capsule name: {capsule_name}\n"
         f"Back graphic concept: {back_concept}\n\n"
         "Generate improved SEO title and 13 tags for this listing."
     )
+    name_words = set(title_words(capsule_name))
+    avoid = [w for w in (overused_words or []) if w.lower() not in name_words]
+    if avoid:
+        prompt += "\n\n" + overused_words_instruction(avoid) + " This applies to the title."
     try:
         response = await asyncio.to_thread(
             genai_client.models.generate_content,
@@ -179,6 +191,7 @@ async def main(apply: bool, product_id: Optional[str]):
     print("-" * 70)
 
     updated, skipped, errors = 0, 0, 0
+    new_titles: List[str] = []  # rolling window for the overused-word check
 
     for p in products:
         pid = str(p.get("id"))
@@ -197,13 +210,17 @@ async def main(apply: bool, product_id: Optional[str]):
 
         print(f"  Back concept:  {back_concept[:80]}")
 
-        seo = await generate_seo(capsule_name, back_concept)
+        overused = find_overused_words(new_titles[-RECENT_TITLES_WINDOW:])
+        if overused:
+            print(f"  Avoiding overused words: {', '.join(overused)}")
+        seo = await generate_seo(capsule_name, back_concept, overused_words=overused)
         if not seo:
             print(f"  ERROR — Gemini returned no usable data")
             errors += 1
             continue
 
         new_title = seo.get("title", "")[:140]
+        new_titles.append(new_title)
         new_tags = seo.get("tags", [])
         new_desc = DESCRIPTION_TEMPLATE.format(
             capsule_name=capsule_name.upper(),
