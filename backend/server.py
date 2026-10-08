@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, ConfigDict, Field
+from pymongo.errors import PyMongoError
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -548,12 +549,18 @@ async def queue_worker():
 
 
 async def cleanup_worker():
-    """Periodically delete orphan drafts older than TTL."""
+    """Periodically delete orphan drafts (shown to the UI but never approved/denied) older than TTL.
+
+    Unconsumed pre-warmed drafts are kept: deleting them would just make the
+    queue worker regenerate them and burn Gemini quota.
+    """
     logger.info("Cleanup worker started")
     while True:
         try:
             cutoff = (datetime.now(timezone.utc) - timedelta(seconds=DRAFT_TTL_SECONDS)).isoformat()
-            result = await capsules_coll.delete_many({"status": "draft", "created_at": {"$lt": cutoff}})
+            result = await capsules_coll.delete_many(
+                {"status": "draft", "consumed": True, "created_at": {"$lt": cutoff}}
+            )
             if result.deleted_count:
                 logger.info(f"Cleaned up {result.deleted_count} orphan draft(s)")
             await asyncio.sleep(CLEANUP_TICK_SECONDS)
@@ -590,26 +597,35 @@ async def root():
     return {"service": "MidnightRotation", "status": "online"}
 
 
-@api_router.get("/capsules/next", response_model=Capsule)
-async def next_capsule(_: None = Depends(require_admin_key)):
-    """Pop the next pre-warmed draft, or generate one synchronously if queue is empty."""
-    doc = await capsules_coll.find_one_and_update(
+async def _pop_prewarmed_draft() -> Optional[dict]:
+    """Atomically claim the oldest unconsumed draft (images excluded; the UI loads them via /image/{side})."""
+    return await capsules_coll.find_one_and_update(
         {"status": "draft", "consumed": False},
         {"$set": {"consumed": True, "consumed_at": now_iso()}},
         sort=[("created_at", 1)],
-        projection={"_id": 0},
+        projection={"_id": 0, "front_image_b64": 0, "back_image_b64": 0},
         return_document=True,
     )
+
+
+@api_router.get("/capsules/next", response_model=CapsulePublic)
+async def next_capsule(_: None = Depends(require_admin_key)):
+    """Pop the next pre-warmed draft, or generate one synchronously if queue is empty."""
+    doc = await _pop_prewarmed_draft()
     if doc:
-        return Capsule(**doc)
+        return CapsulePublic(**doc)
     # Queue empty: generate synchronously
     settings = await get_settings()
     async with generation_lock:
+        # The queue worker may have finished a capsule while we waited on the lock
+        doc = await _pop_prewarmed_draft()
+        if doc:
+            return CapsulePublic(**doc)
         cap = await asyncio.wait_for(
             _generate_and_store(settings, mark_consumed=True),
             timeout=GENERATION_TIMEOUT_SECONDS,
         )
-    return cap
+    return CapsulePublic(**cap.model_dump())
 
 
 @api_router.post("/capsules/generate", response_model=Capsule)
@@ -1004,7 +1020,8 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=[o for o in CORS_ORIGINS if "vercel.app" not in o],
+    allow_origins=CORS_ORIGINS,
+    # Also allow this project's Vercel preview deployments
     allow_origin_regex=r"https://printify-bulk-gnerator[a-zA-Z0-9\-]*\.vercel\.app",
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1014,7 +1031,17 @@ app.add_middleware(
 @app.on_event("startup")
 async def on_startup():
     global _worker_task, _cleanup_task
-    await capsules_coll.create_index([("created_at", -1)])
+    try:
+        await capsules_coll.create_index([("created_at", -1)])
+    except PyMongoError as e:
+        logger.error(
+            "STARTUP FAILED: could not connect to MongoDB (%s: %s). "
+            "Check MONGO_URL - the cluster hostname may no longer resolve "
+            "(paused/deleted Atlas cluster) or Atlas Network Access may block this host.",
+            type(e).__name__,
+            str(e).splitlines()[0][:300] if str(e) else "",
+        )
+        raise RuntimeError("MongoDB unreachable at startup; check MONGO_URL") from None
     # Reset stale consumed=true drafts that were never approved/denied (e.g. server restart mid-review)
     # If they're old, cleanup_worker handles them. If young, leave them - user will see them again
     # by re-requesting /next. Simpler: just relaunch workers.

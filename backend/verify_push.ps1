@@ -1,7 +1,9 @@
 ﻿$BASE = "https://printify-bulk-gnerator.onrender.com/api"
-$KEY  = "e69c365f90a594f5926beb9cd3d9734b6058833cac1f06d09847b381cb2833b7"
+$KEY  = $env:ADMIN_API_KEY
+if (-not $KEY) { Write-Host "ADMIN_API_KEY env var is not set."; exit 1 }
 $HDR  = @{ "Content-Type" = "application/json"; "X-Admin-Key" = $KEY }
-$PRINTIFY_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJhdWQiOiIzN2Q0YmQzMDM1ZmUxMWU5YTgwM2FiN2VlYjNjY2M5NyIsImp0aSI6IjM5ODlhOTdhMzI3YjFiM2RiMDlhNTA5OTVkNTRlMWRlODVmNDE5YTZmMmNmMGQ1ZTAzNGI4MzhlZjQ3ZjVlMzczODU0MTQ4ZTEyNzJiN2UzIiwiaWF0IjoxNzgyMzQxNjQ5LjM4NzUyLCJuYmYiOjE3ODIzNDE2NDkuMzg3NTIyLCJleHAiOjE4MTM4Nzc2NDkuMzgwNzgyLCJzdWIiOiI4MzcxMTMzIiwic2NvcGVzIjpbInNob3BzLm1hbmFnZSIsInNob3BzLnJlYWQiLCJjYXRhbG9nLnJlYWQiLCJvcmRlcnMucmVhZCIsIm9yZGVycy53cml0ZSIsInByb2R1Y3RzLnJlYWQiLCJwcm9kdWN0cy53cml0ZSIsIndlYmhvb2tzLnJlYWQiLCJ3ZWJob29rcy53cml0ZSIsInVwbG9hZHMucmVhZCIsInVwbG9hZHMud3JpdGUiLCJwcmludF9wcm92aWRlcnMucmVhZCIsInVzZXIuaW5mbyJdfQ.qChXyUvsE-6XykthqLtavKlPwoDrnlz88zhAMS7BnvqcilOfbtZ-bUPCb2dJV7sisYeA1fEeSQYshL7vAEVJFEX_rJh7nnlEJN7BTUle6vK6mKos4Gn05CEGYW3-52MXpzlwoVwPnAs4Fz5MJKESwrLz3m18OWa3lHx5I2HCBtp4bX3oLNdpUDqZrNDZFdU3MoHhAUBPoXDHPM2xb6_jbb_YI9TpEzQ7XBL_ct5Ub_NdKkoigzWpozKySah2qwCZzuNE0fhImt8cQJqDTldOw_u1xSUizq01BMxj-EfgfO4yn_biyCX3XQ-Rm3c5yXIfRLowLWkg03PQdOGUKtHjWEh9hhokzzQ2HrTkBespNuzKWrjtL_BHd1Q9uCYjnZyNtAqrGxQFKt8_xHAAoqYBbqzXGZiLp76dd49SVgXvR3_KoCNCOtO4P7PIDX1B4xG_jNbbKbR6cU6C4CoadWl9NDFF0qyMdLvMkRlyBdPra09uXkm21iU8UlA8DMZP-qsivGZWpvMTh5vtCy0Y4mwKgDAUG7AHSvWHqot9VBfwuoKAev7u4V2WWhZmmw6xuzsullNCoh2T8tnJzI-K026fkElms0gGnVCr33OYhUBcSnagZO5D9KcNuQtfDcw8SGn0nRKTFESofPdEIbWZEFOtu728L5fIpy5vudQ_oSygyqY"
+$PRINTIFY_TOKEN = $env:PRINTIFY_API_TOKEN
+if (-not $PRINTIFY_TOKEN) { Write-Host "PRINTIFY_API_TOKEN env var is not set."; exit 1 }
 $SHOP_ID = 3121777
 $PRINTIFY_BASE = "https://api.printify.com/v1"
 $PHDRS = @{ "Authorization" = "Bearer $PRINTIFY_TOKEN"; "User-Agent" = "MidnightRotation-Dashboard/1.0" }

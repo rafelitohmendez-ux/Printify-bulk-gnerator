@@ -1,5 +1,6 @@
 ﻿$BASE = "https://printify-bulk-gnerator.onrender.com/api"
-$KEY  = "e69c365f90a594f5926beb9cd3d9734b6058833cac1f06d09847b381cb2833b7"
+$KEY  = $env:ADMIN_API_KEY
+if (-not $KEY) { Write-Host "ADMIN_API_KEY env var is not set."; exit 1 }
 $HDR  = @{ "Content-Type" = "application/json"; "X-Admin-Key" = $KEY }
 $pass = 0; $fail = 0; $skip = 0; $results = @()
 
