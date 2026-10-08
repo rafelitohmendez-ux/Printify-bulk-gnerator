@@ -119,7 +119,13 @@ class EtsyAuth:
         if missing:
             raise EtsyConfigError(f"Missing env var(s): {', '.join(missing)}")
 
-        if not doc.get("refresh_token"):
+        env_refresh = _env("ETSY_REFRESH_TOKEN")
+        # A never-refreshed env seed is superseded by a different (newer) env token; once a
+        # refresh has happened, Mongo's pair is the live one and env values are stale.
+        reseed = (
+            doc.get("source") == "env_seed" and env_refresh and env_refresh != doc.get("refresh_token")
+        )
+        if not doc.get("refresh_token") or reseed:
             doc = {
                 "id": AUTH_DOC_ID,
                 "client_id": self.api_key,
@@ -163,7 +169,11 @@ class EtsyAuth:
                     self.auth = latest
                     logger.info("Etsy token was rotated by another process; using the newer pair from Mongo")
                     return
-                raise EtsyAPIError("Etsy token refresh", resp.status_code, resp.text)
+                err = EtsyAPIError("Etsy token refresh", resp.status_code, resp.text)
+                if "invalid_grant" in resp.text:
+                    err.args = (f"{err} - the stored refresh token is dead; re-authorize with "
+                                "`python backend/etsy_oauth_setup.py` (saves a new pair to Mongo)",)
+                raise err
             data = resp.json()
             patch = {
                 "client_id": self.api_key,

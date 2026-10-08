@@ -513,3 +513,29 @@ def test_upload_etsy_images_uses_mongo_tokens(db, etsy, env, monkeypatch):
     resp = asyncio.run(uei.etsy_request("GET", f"{uei.ETSY_API_BASE}/shops/{ENV['ETSY_SHOP_ID']}"))
     assert resp.status_code == 200 and resp.json()["shop_name"] == "MidnightRotation"
     assert auth_doc(db)["refresh_token"] == "new-refresh-1"
+
+
+def test_env_seed_replaced_by_newer_env_token_but_not_after_refresh(db, env, monkeypatch):
+    asyncio.run(db[1].insert_one({"id": etsy_photos.AUTH_DOC_ID, "access_token": "dead",
+                                  "refresh_token": "dead-refresh", "source": "env_seed"}))
+    auth = etsy_photos.EtsyAuth(db[1])
+    asyncio.run(auth.load())
+    assert auth_doc(db)["refresh_token"] == "seed-refresh"  # newer env token wins over a dead seed
+    asyncio.run(db[1].update_one({"id": etsy_photos.AUTH_DOC_ID},
+                                 {"$set": {"refresh_token": "rotated", "source": "refresh"}}))
+    asyncio.run(etsy_photos.EtsyAuth(db[1]).load())
+    assert auth_doc(db)["refresh_token"] == "rotated"  # env never overrides a refreshed pair
+
+
+def test_invalid_grant_error_says_how_to_fix(db, env, monkeypatch):
+    def handler(request):
+        if str(request.url) == etsy_photos.ETSY_TOKEN_URL:
+            return httpx.Response(400, json={"error": "invalid_grant", "error_description": "refresh_token is invalid"})
+        return httpx.Response(401)
+
+    monkeypatch.setattr(etsy_photos, "_http_client", lambda timeout=60.0: httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), timeout=timeout))
+    auth = etsy_photos.EtsyAuth(db[1])
+    with pytest.raises(etsy_photos.EtsyAPIError) as e:
+        asyncio.run(auth.request("GET", "/shops/1"))
+    assert "etsy_oauth_setup.py" in str(e.value)
