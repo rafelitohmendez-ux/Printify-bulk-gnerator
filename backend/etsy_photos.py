@@ -4,7 +4,9 @@ Flow (triggered after auto-push publishes a capsule, or via the retry endpoint):
   1. Poll Printify until the product has an external Etsy listing ID (Printify
      publishes to Etsy asynchronously, so the listing doesn't exist right away).
   2. Generate a themed atmospheric photo with Gemini (generate_mockups.py).
-  3. Upload it to the Etsy listing as the primary image (rank 1).
+  3. Upload it to the Etsy listing as the primary image (rank 1), then find the
+     back-print mockup among the listing's images (perceptual hash vs Printify's
+     back mockup) and re-rank it to 2.
 The outcome is saved on the capsule as etsy_photos_status / etsy_photos_error.
 
 Etsy OAuth tokens live in Mongo (settings collection, {"id": "etsy_auth"}, the
@@ -21,6 +23,7 @@ Env vars:
 """
 import asyncio
 import base64
+import io
 import logging
 import os
 import re
@@ -41,6 +44,20 @@ TOKEN_EXPIRY_MARGIN_SECONDS = 60
 
 LISTING_POLL_INTERVAL_SECONDS = 20
 LISTING_POLL_TIMEOUT_SECONDS = 600
+
+RATE_LIMIT_MAX_RETRIES = 4
+RATE_LIMIT_BASE_DELAY_SECONDS = 2
+RATE_LIMIT_MAX_DELAY_SECONDS = 60
+
+# Back-mockup matching (perceptual dHash, 64 bits): accept the closest Etsy image only
+# if it's within MAX_DISTANCE and clearly closer than the runner-up.
+BACK_MATCH_MAX_DISTANCE = 10
+BACK_MATCH_MIN_MARGIN = 4
+
+# Listings that got an atmospheric photo (pipeline or backfill), keyed by listing_id
+PHOTO_LOG_COLLECTION = "etsy_photo_log"
+
+_sleep = asyncio.sleep  # patched in tests
 
 # Serializes token refreshes: Etsy rotates the refresh token, so two concurrent
 # refreshes with the same token would make the second one fail.
@@ -161,18 +178,34 @@ class EtsyAuth:
         }
 
     async def request(self, method: str, path: str, **kwargs) -> httpx.Response:
-        """Call the Etsy API, refreshing first if expired and once more on a 401."""
+        """Call the Etsy API (path relative to ETSY_API_BASE, or a full URL).
+
+        Refreshes first if expired and once more on a 401; retries 429s with backoff.
+        """
         if not self.auth:
             await self.load()
         if self._expired():
             await self.refresh()
-        url = f"{ETSY_API_BASE}{path}"
-        async with _http_client() as c:
-            resp = await c.request(method, url, headers=self._headers(), **kwargs)
+        url = path if path.startswith("http") else f"{ETSY_API_BASE}{path}"
+        resp = await self._send(method, url, **kwargs)
         if resp.status_code == 401:
             await self.refresh()
+            resp = await self._send(method, url, **kwargs)
+        return resp
+
+    async def _send(self, method: str, url: str, **kwargs) -> httpx.Response:
+        for attempt in range(RATE_LIMIT_MAX_RETRIES + 1):
             async with _http_client() as c:
                 resp = await c.request(method, url, headers=self._headers(), **kwargs)
+            if resp.status_code != 429 or attempt == RATE_LIMIT_MAX_RETRIES:
+                return resp
+            try:
+                delay = float(resp.headers.get("retry-after") or 0)
+            except ValueError:
+                delay = 0
+            delay = min(max(delay, RATE_LIMIT_BASE_DELAY_SECONDS * 2 ** attempt), RATE_LIMIT_MAX_DELAY_SECONDS)
+            logger.warning(f"Etsy rate limited (429) on {method} {url}; retry {attempt + 1} in {delay:.0f}s")
+            await _sleep(delay)
         return resp
 
     def expires_at_iso(self) -> Optional[str]:
@@ -197,22 +230,24 @@ async def check_etsy(settings_coll) -> Dict[str, Any]:
     }
 
 
-async def wait_for_etsy_listing_id(
+async def wait_for_published_product(
     shop_id: int,
     product_id: str,
     timeout: float = LISTING_POLL_TIMEOUT_SECONDS,
     interval: float = LISTING_POLL_INTERVAL_SECONDS,
-) -> Optional[str]:
-    """Poll Printify until the product has its external Etsy listing ID, or None on timeout."""
+) -> Optional[Dict[str, Any]]:
+    """Poll Printify until the product has its external Etsy listing ID (product["external"]["id"]).
+
+    Returns the product, or None on timeout.
+    """
     deadline = time.monotonic() + timeout
     attempt = 0
     while True:
         attempt += 1
         try:
             product = await get_product(shop_id, product_id)
-            listing_id = ((product or {}).get("external") or {}).get("id")
-            if listing_id:
-                return str(listing_id)
+            if ((product or {}).get("external") or {}).get("id"):
+                return product
         except Exception as e:  # transient Printify errors: keep polling until the deadline
             logger.info(f"Printify poll {attempt} for {product_id} failed, retrying: {_short(str(e))}")
         if time.monotonic() + interval > deadline:
@@ -220,6 +255,118 @@ async def wait_for_etsy_listing_id(
         await asyncio.sleep(interval)
 
 
+def back_mockup_src(product: Dict[str, Any]) -> Optional[str]:
+    from printify_client import _pick_back_mockup
+
+    img = _pick_back_mockup((product or {}).get("images") or [])
+    return (img or {}).get("src")
+
+
+# -----------------------------
+# Image ranking on Etsy
+# -----------------------------
+def dhash(image_bytes: bytes) -> int:
+    """64-bit perceptual difference hash: survives resizing/re-encoding by Etsy's CDN."""
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(image_bytes)).convert("L").resize((9, 8), Image.LANCZOS)
+    px = list(img.getdata())
+    bits = 0
+    for row in range(8):
+        for col in range(8):
+            bits = (bits << 1) | (px[row * 9 + col] > px[row * 9 + col + 1])
+    return bits
+
+
+def _hamming(a: int, b: int) -> int:
+    return bin(a ^ b).count("1")
+
+
+async def _download(url: str) -> bytes:
+    async with _http_client(30.0) as c:
+        resp = await c.get(url)
+        resp.raise_for_status()
+        return resp.content
+
+
+async def move_back_mockup_to_rank2(
+    auth: "EtsyAuth", listing_id: str, back_src: Optional[str], exclude_ids: List[int]
+) -> str:
+    """Find the listing's back-print mockup by appearance and re-rank it to 2. Returns a note."""
+    if not back_src:
+        return "back mockup reorder skipped: Printify product has no back mockup"
+    try:
+        back_hash = dhash(await _download(back_src))
+    except Exception as e:
+        return f"back mockup reorder skipped: could not load Printify back mockup ({_short(str(e), 120)})"
+    resp = await auth.request("GET", f"/listings/{listing_id}/images")
+    if resp.status_code >= 400:
+        return f"back mockup reorder skipped: Etsy GET images HTTP {resp.status_code}"
+    scored = []
+    for img in resp.json().get("results") or []:
+        if img.get("listing_image_id") in exclude_ids:
+            continue
+        url = img.get("url_570xN") or img.get("url_fullxfull")
+        if not url:
+            continue
+        try:
+            scored.append((_hamming(back_hash, dhash(await _download(url))), img))
+        except Exception:
+            continue
+    if not scored:
+        return "back mockup reorder skipped: no comparable Etsy images"
+    scored.sort(key=lambda s: s[0])
+    best_dist, best = scored[0]
+    runner_up = scored[1][0] if len(scored) > 1 else None
+    if best_dist > BACK_MATCH_MAX_DISTANCE or (runner_up is not None and runner_up - best_dist < BACK_MATCH_MIN_MARGIN):
+        return (f"back mockup reorder skipped: no clear match (best distance {best_dist}, "
+                f"runner-up {runner_up}); atmospheric photo is still rank 1")
+    if int(best.get("rank") or 0) == 2:
+        return "back mockup already at rank 2"
+    resp = await auth.request(
+        "POST",
+        f"/shops/{auth.shop_id}/listings/{listing_id}/images",
+        files={"listing_image_id": (None, str(best["listing_image_id"])), "rank": (None, "2")},
+    )
+    if resp.status_code >= 400:
+        return f"back mockup reorder failed: HTTP {resp.status_code}: {_short(resp.text, 150)}"
+    return f"back mockup (image {best['listing_image_id']}) moved to rank 2"
+
+
+async def upload_primary_photo(
+    auth: "EtsyAuth", listing_id: str, image_bytes: bytes, file_name: str, back_src: Optional[str]
+) -> str:
+    """Upload the atmospheric photo as rank 1, then put the back mockup at rank 2. Returns a note.
+
+    Raises EtsyAPIError if the upload itself fails (the reorder is best-effort).
+    """
+    resp = await auth.request(
+        "POST",
+        f"/shops/{auth.shop_id}/listings/{listing_id}/images",
+        files={"image": (file_name, image_bytes, "image/png")},
+        data={"rank": "1"},
+    )
+    if resp.status_code >= 400:
+        raise EtsyAPIError("Etsy image upload", resp.status_code, resp.text)
+    new_id = (resp.json() or {}).get("listing_image_id")
+    try:
+        return await move_back_mockup_to_rank2(auth, listing_id, back_src, [new_id] if new_id else [])
+    except Exception as e:
+        return f"back mockup reorder failed: {type(e).__name__}: {_short(str(e), 150)}"
+
+
+async def log_listing_photo(log_coll, listing_id: str, product_id: Optional[str], source: str, note: str) -> None:
+    await log_coll.update_one(
+        {"listing_id": str(listing_id)},
+        {"$set": {"listing_id": str(listing_id), "printify_product_id": product_id, "status": "success",
+                  "source": source, "note": note, "uploaded_at": _now_iso()}},
+        upsert=True,
+    )
+
+
+# -----------------------------
+# Pipeline for one approved capsule
+# -----------------------------
 async def _generate_photo(capsule: Dict[str, Any]) -> Optional[bytes]:
     """Generate the atmospheric photo (imported lazily so a Gemini/config problem is a recorded failure)."""
     from generate_mockups import generate_background_image, infer_theme_prompt
@@ -271,15 +418,16 @@ async def run_etsy_photos(
         except EtsyConfigError as e:
             return await _record(capsules_coll, capsule_id, "skipped", str(e))
 
-        listing_id = await wait_for_etsy_listing_id(
+        product = await wait_for_published_product(
             int(settings["printify_shop_id"]), pid, timeout=poll_timeout, interval=poll_interval
         )
-        if not listing_id:
+        if not product:
             return await _record(
                 capsules_coll, capsule_id, "failed",
                 f"Timed out after {int(poll_timeout)}s waiting for Printify to publish product {pid} "
                 "to Etsy (no external Etsy listing ID yet). Retry with POST /api/capsules/{id}/etsy-photos.",
             )
+        listing_id = str(product["external"]["id"])
 
         image_bytes = await _generate_photo(capsule)
         if not image_bytes:
@@ -287,19 +435,11 @@ async def run_etsy_photos(
                                  etsy_listing_id=listing_id)
 
         cname = re.sub(r"[^a-z0-9]+", "_", (capsule.get("capsule_name") or pid).lower()).strip("_")[:40] or pid
-        resp = await auth.request(
-            "POST",
-            f"/shops/{auth.shop_id}/listings/{listing_id}/images",
-            files={"image": (f"{cname}_etsy.png", image_bytes, "image/png")},
-            data={"rank": "1"},
-        )
-        if resp.status_code >= 400:
-            return await _record(
-                capsules_coll, capsule_id, "failed",
-                f"Etsy image upload failed: HTTP {resp.status_code}: {_short(resp.text)}",
-                etsy_listing_id=listing_id,
-            )
-        logger.info(f"Uploaded atmospheric photo to Etsy listing {listing_id} for capsule {capsule_id} ({pid})")
-        return await _record(capsules_coll, capsule_id, "success", None, etsy_listing_id=listing_id)
+        note = await upload_primary_photo(auth, listing_id, image_bytes, f"{cname}_etsy.png", back_mockup_src(product))
+        await log_listing_photo(capsules_coll.database[PHOTO_LOG_COLLECTION], listing_id, pid, "approve", note)
+        logger.info(f"Uploaded atmospheric photo to Etsy listing {listing_id} for capsule {capsule_id} ({pid}); {note}")
+        return await _record(capsules_coll, capsule_id, "success", None, etsy_listing_id=listing_id, etsy_photos_note=note)
+    except EtsyAPIError as e:
+        return await _record(capsules_coll, capsule_id, "failed", str(e))
     except Exception as e:
         return await _record(capsules_coll, capsule_id, "failed", f"{type(e).__name__}: {_short(str(e))}")

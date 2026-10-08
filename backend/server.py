@@ -280,6 +280,7 @@ class CapsulePublic(BaseModel):
     printify_push_error: Optional[str] = None
     etsy_photos_status: Optional[str] = None  # 'pending' | 'success' | 'failed' | 'skipped' | None
     etsy_photos_error: Optional[str] = None
+    etsy_photos_note: Optional[str] = None  # e.g. whether the back mockup was moved to rank 2
 
 
 class CustomTheme(BaseModel):
