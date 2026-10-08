@@ -156,6 +156,13 @@ class EtsyAuth:
                     "refresh_token": self.auth.get("refresh_token"),
                 })
             if resp.status_code >= 400:
+                # Another process (deployed backend vs a local script) may have rotated the
+                # pair a moment ago; if Mongo now holds a different one, use that instead.
+                latest = await self.settings_coll.find_one({"id": AUTH_DOC_ID}, {"_id": 0}) or {}
+                if latest.get("refresh_token") and latest.get("refresh_token") != self.auth.get("refresh_token"):
+                    self.auth = latest
+                    logger.info("Etsy token was rotated by another process; using the newer pair from Mongo")
+                    return
                 raise EtsyAPIError("Etsy token refresh", resp.status_code, resp.text)
             data = resp.json()
             patch = {

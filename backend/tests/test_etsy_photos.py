@@ -469,3 +469,47 @@ def test_retry_endpoint_runs_pipeline(db, etsy, env, printify, gemini):
     asyncio.run(go())
     doc = stored(db, cap["id"])
     assert doc["etsy_photos_status"] == "success" and doc["etsy_photos_error"] is None
+
+
+# ---- local scripts share the Mongo token record ------------------------------------------
+def test_refresh_adopts_pair_rotated_by_another_process(db, env, monkeypatch):
+    """Render and a local script both hold the old refresh token; the loser picks up the winner's pair."""
+    asyncio.run(db[1].insert_one({
+        "id": etsy_photos.AUTH_DOC_ID, "access_token": "old", "refresh_token": "old-refresh", "expires_at": 0,
+    }))
+    auth = etsy_photos.EtsyAuth(db[1])
+    asyncio.run(auth.load())
+    # The other process rotates first and saves its pair to Mongo
+    asyncio.run(db[1].update_one({"id": etsy_photos.AUTH_DOC_ID}, {"$set": {
+        "access_token": "winner-access", "refresh_token": "winner-refresh", "expires_at": time.time() + 3600}}))
+
+    def handler(request):
+        if str(request.url) == etsy_photos.ETSY_TOKEN_URL:
+            return httpx.Response(400, json={"error": "invalid_grant"})
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(etsy_photos, "_http_client", lambda timeout=60.0: httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), timeout=timeout))
+    auth.auth["access_token"] = "old"  # this process still has the stale pair in memory
+    asyncio.run(auth.refresh())
+    assert auth.auth["access_token"] == "winner-access"
+
+
+def test_upload_etsy_images_uses_mongo_tokens(db, etsy, env, monkeypatch):
+    import upload_etsy_images as uei
+
+    assert not hasattr(uei, "_update_env_var")  # tokens are never written to .env anymore
+    assert "access_token" not in uei._tokens and "refresh_token" not in uei._tokens
+    auth = etsy_photos.EtsyAuth(db[1])
+    monkeypatch.setattr(uei, "_auth", None)
+
+    async def fake_get_auth():
+        if not auth.auth:
+            await auth.load()
+        return auth
+
+    monkeypatch.setattr(uei, "_get_auth", fake_get_auth)
+    etsy.valid_token = "rotated"  # stale seed -> 401 -> refresh
+    resp = asyncio.run(uei.etsy_request("GET", f"{uei.ETSY_API_BASE}/shops/{ENV['ETSY_SHOP_ID']}"))
+    assert resp.status_code == 200 and resp.json()["shop_name"] == "MidnightRotation"
+    assert auth_doc(db)["refresh_token"] == "new-refresh-1"

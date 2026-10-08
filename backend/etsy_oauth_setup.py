@@ -1,11 +1,12 @@
 """
 Etsy OAuth 2.0 PKCE Setup — One-Time Token Generator
 =====================================================
-Run this once to authorize this app against your Etsy shop and obtain an
-access_token + refresh_token. Paste the printed values into backend/.env
-as ETSY_ACCESS_TOKEN and ETSY_REFRESH_TOKEN.
+Run this to authorize this app against your Etsy shop (first time, or to
+recover after the refresh token was invalidated). The new access_token +
+refresh_token are saved to the shared Mongo record settings {"id": "etsy_auth"},
+which the deployed backend and the local scripts all read - nothing to paste.
 
-Requires ETSY_API_KEY to already be set in backend/.env.
+Requires ETSY_API_KEY, ETSY_SHOP_ID, MONGO_URL and DB_NAME in backend/.env.
 
 Usage:
     python etsy_oauth_setup.py
@@ -16,12 +17,14 @@ import http.server
 import os
 import secrets
 import threading
+import time
 import urllib.parse
 import webbrowser
 from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
+from pymongo import MongoClient
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -148,17 +151,26 @@ def main():
         print(f"ERROR exchanging code for tokens: {e.response.status_code} {e.response.text}")
         return
 
-    access_token = tokens.get("access_token")
-    refresh_token = tokens.get("refresh_token")
-    expires_in = tokens.get("expires_in")
+    expires_in = int(tokens.get("expires_in") or 3600)
+    db = MongoClient(os.environ["MONGO_URL"])[os.environ["DB_NAME"]]
+    db.settings.update_one(
+        {"id": "etsy_auth"},
+        {"$set": {
+            "id": "etsy_auth",
+            "client_id": ETSY_API_KEY,
+            "shop_id": os.environ.get("ETSY_SHOP_ID", "").strip(),
+            "access_token": tokens["access_token"],
+            "refresh_token": tokens["refresh_token"],
+            "expires_at": time.time() + expires_in,
+            "source": "oauth_setup",
+        }},
+        upsert=True,
+    )
 
     print("=" * 70)
-    print("SUCCESS - save these to backend/.env:")
+    print('SUCCESS - tokens saved to Mongo settings {"id": "etsy_auth"} (values not shown).')
     print("=" * 70)
-    print(f"ETSY_ACCESS_TOKEN={access_token}")
-    print(f"ETSY_REFRESH_TOKEN={refresh_token}")
-    if expires_in:
-        print(f"\n(access_token expires in {expires_in} seconds ~ {round(expires_in / 3600, 1)} hours)")
+    print(f"(access_token expires in {expires_in} seconds; it auto-refreshes from Mongo after that)")
 
 
 if __name__ == "__main__":
