@@ -47,6 +47,7 @@ from printify_client import (
     update_product,
 )
 from bulk_seo_update import generate_seo
+import etsy_photos
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -277,6 +278,8 @@ class CapsulePublic(BaseModel):
     printify_product_id: Optional[str] = None
     printify_push_status: Optional[str] = None  # 'success' | 'failed' | None
     printify_push_error: Optional[str] = None
+    etsy_photos_status: Optional[str] = None  # 'pending' | 'success' | 'failed' | 'skipped' | None
+    etsy_photos_error: Optional[str] = None
 
 
 class CustomTheme(BaseModel):
@@ -832,6 +835,7 @@ async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = N
                     f"Skipping auto-publish for capsule {capsule_id} (Printify product {pid}): "
                     "missing front_image_b64 or back_image_b64"
                 )
+                await _set_etsy_photos_status(capsule_id, "skipped", "Capsule is missing front or back image")
             else:
                 try:
                     seo = await generate_seo(
@@ -853,60 +857,17 @@ async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = N
                     await prioritize_back_mockup(shop_id, pid)
                     await publish_product(shop_id, pid)
                     logger.info(f"Published capsule {capsule_id} (Printify product {pid}) live to Etsy")
-                except Exception:
+                except Exception as e:
                     logger.exception(f"SEO refresh / publish failed for Printify product {pid}")
-
-                # Best-effort: generate a themed atmospheric photo and upload it
-                # directly to the matching live Etsy listing. Isolated in its own
-                # try/except (including the imports) so a missing Etsy config or
-                # any failure here never affects the approve/publish flow above.
-                try:
-                    from generate_mockups import generate_background_image, infer_theme_prompt
-                    from upload_etsy_images import fetch_etsy_listings, match_etsy_listing, upload_listing_image
-
-                    etsy_listings = await fetch_etsy_listings()
-                    listing = match_etsy_listing({"title": full.get("title") or ""}, etsy_listings)
-                    if not listing:
-                        logger.warning(
-                            f"No matching Etsy listing found for capsule {capsule_id} "
-                            f"(Printify product {pid}); skipping atmospheric image"
-                        )
-                    else:
-                        scene_prompt = infer_theme_prompt({
-                            "title": full.get("title") or "",
-                            "description": full.get("description") or "",
-                            "tags": (full.get("tags") or []) + [full.get("theme_seed") or ""],
-                        })
-                        image_bytes = await generate_background_image(
-                            scene_prompt,
-                            full.get("back_concept") or "",
-                            design_image_bytes=base64.b64decode(full["back_image_b64"]),
-                        )
-                        if not image_bytes:
-                            logger.warning(
-                                f"Gemini returned no atmospheric image for capsule {capsule_id} ({pid})"
-                            )
-                        else:
-                            cname = re.sub(
-                                r"[^a-z0-9]+", "_", (full.get("capsule_name") or pid).lower()
-                            ).strip("_")[:40] or pid
-                            resp = await upload_listing_image(
-                                listing["listing_id"], image_bytes, f"{cname}_etsy.png"
-                            )
-                            if resp.status_code >= 400:
-                                logger.warning(
-                                    f"Etsy atmospheric image upload failed for {pid}: "
-                                    f"{resp.status_code} {resp.text}"
-                                )
-                            else:
-                                logger.info(
-                                    f"Uploaded atmospheric image to Etsy listing "
-                                    f"{listing['listing_id']} for capsule {capsule_id} (Printify product {pid})"
-                                )
-                except Exception:
-                    logger.exception(
-                        f"Etsy atmospheric image upload failed for capsule {capsule_id} (Printify product {pid})"
+                    await _set_etsy_photos_status(
+                        capsule_id, "failed", f"Printify publish failed, photos not attempted: {str(e)[:300]}"
                     )
+                else:
+                    # Atmospheric Etsy photo runs in the background: it has to wait for
+                    # Printify to create the Etsy listing, which can take minutes.
+                    await _set_etsy_photos_status(capsule_id, "pending")
+                    schedule_etsy_photos(capsule_id)
+
         except Exception as e:
             logger.exception("printify push failed")
             await capsules_coll.update_one(
@@ -922,6 +883,71 @@ async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = N
         {"_id": 0, "front_image_b64": 0, "back_image_b64": 0},
     )
     return CapsulePublic(**doc)
+
+
+# -----------------------------
+# Etsy atmospheric photos
+# -----------------------------
+_etsy_photo_tasks: Dict[str, asyncio.Task] = {}
+
+
+async def _set_etsy_photos_status(capsule_id: str, status: str, error: Optional[str] = None) -> None:
+    if status in ("failed", "skipped"):
+        logger.warning(f"Etsy photos {status} for capsule {capsule_id}: {error}")
+    await capsules_coll.update_one(
+        {"id": capsule_id},
+        {"$set": {"etsy_photos_status": status, "etsy_photos_error": error, "etsy_photos_updated_at": now_iso()}},
+    )
+
+
+def schedule_etsy_photos(capsule_id: str) -> bool:
+    """Start the photo pipeline in the background. False if one is already running for this capsule."""
+    running = _etsy_photo_tasks.get(capsule_id)
+    if running and not running.done():
+        return False
+    task = asyncio.create_task(etsy_photos.run_etsy_photos(capsule_id, capsules_coll, settings_coll))
+    _etsy_photo_tasks[capsule_id] = task
+    task.add_done_callback(lambda t: _etsy_photo_tasks.pop(capsule_id, None) if _etsy_photo_tasks.get(capsule_id) is t else None)
+    return True
+
+
+@api_router.post("/capsules/{capsule_id}/etsy-photos", status_code=202)
+async def retry_etsy_photos(capsule_id: str, _: None = Depends(require_admin_key)):
+    """Re-run the atmospheric Etsy photo upload for one approved capsule (runs in the background)."""
+    doc = await capsules_coll.find_one(
+        {"id": capsule_id}, {"_id": 0, "status": 1, "printify_product_id": 1}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Capsule not found")
+    if doc.get("status") != "approved":
+        raise HTTPException(status_code=400, detail="Capsule is not approved")
+    if not doc.get("printify_product_id"):
+        raise HTTPException(status_code=400, detail="Capsule has not been pushed to Printify")
+    running = _etsy_photo_tasks.get(capsule_id)
+    if running and not running.done():
+        raise HTTPException(status_code=409, detail="Etsy photo upload already running for this capsule")
+    await _set_etsy_photos_status(capsule_id, "pending")
+    schedule_etsy_photos(capsule_id)
+    return {
+        "ok": True,
+        "id": capsule_id,
+        "etsy_photos_status": "pending",
+        "detail": "Started. Check etsy_photos_status in GET /api/capsules/approved.",
+    }
+
+
+@api_router.get("/etsy/check")
+async def etsy_check(_: None = Depends(require_admin_key)):
+    """Verify the Etsy token works (refreshing if needed). Never returns token values."""
+    try:
+        return await etsy_photos.check_etsy(settings_coll)
+    except etsy_photos.EtsyConfigError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except etsy_photos.EtsyAPIError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        logger.exception("etsy check failed")
+        raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {str(e)[:300]}")
 
 
 @api_router.post("/capsules/{capsule_id}/deny")
@@ -1187,4 +1213,6 @@ async def on_shutdown():
         _worker_task.cancel()
     if _cleanup_task:
         _cleanup_task.cancel()
+    for task in list(_etsy_photo_tasks.values()):
+        task.cancel()
     client.close()

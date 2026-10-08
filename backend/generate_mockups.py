@@ -100,7 +100,12 @@ async def generate_background_image(
             f"hanging naturally in {scene_prompt}, back facing camera. The design "
             f"must appear exactly as shown on the shirt — do not alter or reimagine "
             f"it. Cinematic lighting, gothic industrial aesthetic, photorealistic "
-            f"product photography. The shirt is NOT laying flat."
+            f"product photography. The shirt is NOT laying flat. "
+            f"The design is printed directly on the fabric with no border, frame, "
+            f"mat, or box around it — it is not displayed as separate framed "
+            f"artwork or a picture hanging on the shirt. The ink sits directly on "
+            f"the fabric surface with no white rectangle, outline, or boundary "
+            f"separating it from the shirt."
         )
         contents = [types.Part.from_bytes(data=design_image_bytes, mime_type="image/png"), prompt]
     else:
@@ -111,7 +116,9 @@ async def generate_background_image(
             f"photorealistic product photography. "
             f"The shirt is displayed upright and hanging naturally, back facing the camera "
             f"directly. The shirt is NOT laying flat, NOT on a surface, NOT folded. "
-            f"It is suspended or hanging in the environment."
+            f"It is suspended or hanging in the environment. The design is printed "
+            f"directly on the fabric with no border, frame, mat, or box around it — "
+            f"not displayed as separate framed artwork."
         )
         contents = prompt
     try:

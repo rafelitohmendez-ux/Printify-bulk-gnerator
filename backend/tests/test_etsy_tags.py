@@ -158,9 +158,12 @@ def test_approve_auto_push_filters_seo_tags_sent_to_printify(mock_db, monkeypatc
     monkeypatch.setattr(server, "update_product", fake_update)
     monkeypatch.setattr(server, "prioritize_back_mockup", noop)
     monkeypatch.setattr(server, "publish_product", noop)
+    scheduled = []
+    monkeypatch.setattr(server, "schedule_etsy_photos", scheduled.append)
     # Block the best-effort Etsy atmospheric step so no real Etsy/Gemini call can happen
     monkeypatch.setitem(sys.modules, "generate_mockups", types.ModuleType("generate_mockups"))
     monkeypatch.setitem(sys.modules, "upload_etsy_images", types.ModuleType("upload_etsy_images"))
 
     asyncio.run(server.approve_capsule(cap["id"], None, None))
     assert sent["tags"] == ["Gothic Streetwear", "Rave Goth Tee"]
+    assert scheduled == [cap["id"]]  # photos handed off to the background pipeline
