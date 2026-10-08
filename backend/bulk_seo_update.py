@@ -119,7 +119,15 @@ async def generate_seo(capsule_name: str, back_concept: str) -> Optional[Dict[st
         for r in required:
             if not any(str(t).lower() == r.lower() for t in tags):
                 tags.insert(0, r)
-        data["tags"] = [t[:20] for t in tags[:13]]
+        # Etsy caps tags at 20 chars: drop long ones (truncating cuts mid-word) and case-insensitive dupes
+        seen = set()
+        kept = []
+        for t in tags:
+            t = str(t).strip()
+            if t and len(t) <= 20 and t.lower() not in seen:
+                seen.add(t.lower())
+                kept.append(t)
+        data["tags"] = kept[:13]
         return data
     except Exception as e:
         print(f"    Gemini error: {e}")

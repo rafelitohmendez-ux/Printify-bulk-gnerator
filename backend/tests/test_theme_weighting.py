@@ -2,7 +2,6 @@
 
 Run: pytest backend/tests/test_theme_weighting.py
 """
-import os
 import random
 import sys
 from collections import Counter
@@ -10,18 +9,8 @@ from pathlib import Path
 
 import pytest
 
-# Dummy env set before import so server.py never needs real secrets (load_dotenv won't override these).
-for _k, _v in {
-    "MONGO_URL": "mongodb://localhost:1",
-    "DB_NAME": "offline_test",
-    "GEMINI_API_KEY": "offline-dummy",
-    "ADMIN_API_KEY": "offline-dummy",
-    "CORS_ORIGINS": "http://localhost:3000",
-}.items():
-    os.environ.setdefault(_k, _v)
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import server  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from offline_server import server  # noqa: E402
 
 PICKS = 1000
 LONGEST_CAPSULE_NAME = "X" * 30

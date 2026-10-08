@@ -200,6 +200,16 @@ DEFAULT_THEMES: List[Dict[str, str]] = [
 # Fraction of auto-mode picks drawn from the cyber category (rest come from gothic)
 CYBER_THEME_WEIGHT = 0.6
 
+# Etsy tag rules
+MAX_TAGS = 13
+ETSY_TAG_MAX_LEN = 20
+REQUIRED_TAGS = ["Gothic Streetwear", "Back Print Shirt"]
+# Used to top tags back up to MAX_TAGS when over-long/duplicate LLM tags are dropped
+FALLBACK_TAGS = {
+    "cyber": ["Cyber Goth Shirt", "Cybergoth Tee", "Techwear Shirt", "Rave Goth Tee", "Cyberpunk Shirt"],
+    "gothic": ["Goth Shirt", "Dark Academia Tee", "Alt Clothing", "Occult Shirt", "Industrial Goth"],
+}
+
 NICHE_THEME_KEYS = {
     "religious_industrial",
     "brutalist_cathedral",
@@ -390,6 +400,30 @@ def title_formulas_for(category: str) -> List[str]:
     return CYBER_SEO_TITLE_FORMULAS if category == "cyber" else SEO_TITLE_FORMULAS
 
 
+def filter_etsy_tags(tags: List[str]) -> List[str]:
+    """Drop tags over Etsy's 20-char limit (never truncate mid-word) and case-insensitive duplicates."""
+    seen = set()
+    kept = []
+    for t in tags or []:
+        t = str(t).strip()
+        if t and len(t) <= ETSY_TAG_MAX_LEN and t.lower() not in seen:
+            seen.add(t.lower())
+            kept.append(t)
+    return kept
+
+
+def finalize_tags(tags: List[str], category: str) -> List[str]:
+    """Required tags first, then valid LLM tags, then category fallbacks (other category's last) up to MAX_TAGS."""
+    other = "gothic" if category == "cyber" else "cyber"
+    ordered = (
+        REQUIRED_TAGS
+        + list(tags or [])
+        + FALLBACK_TAGS.get(category, FALLBACK_TAGS["gothic"])
+        + FALLBACK_TAGS[other]
+    )
+    return filter_etsy_tags(ordered)[:MAX_TAGS]
+
+
 def default_theme_hint(category: str) -> str:
     """{theme_hint} for themes without a THEME_HINT_OVERRIDES entry (e.g. custom themes)."""
     return "Cyber Goth" if category == "cyber" else "Industrial Gothic"
@@ -484,12 +518,7 @@ async def llm_generate_text(theme_prompt: str, banned_words: List[str], banned_n
     if not match:
         raise ValueError(f"No JSON found in LLM response: {text[:200]}")
     data = json.loads(match.group(0))
-    tags = data.get("tags") or []
-    required = ["Gothic Streetwear", "Back Print Shirt"]
-    for r in required:
-        if not any(str(t).lower() == r.lower() for t in tags):
-            tags.insert(0, r)
-    data["tags"] = tags[:13]
+    data["tags"] = finalize_tags(data.get("tags") or [], category)
     return data
 
 
@@ -762,7 +791,7 @@ async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = N
         if payload.title is not None:
             update["title"] = payload.title
         if payload.tags is not None:
-            update["tags"] = payload.tags[:13]
+            update["tags"] = filter_etsy_tags(payload.tags)[:MAX_TAGS]
         if payload.capsule_name is not None:
             update["capsule_name"] = payload.capsule_name
     result = await capsules_coll.update_one({"id": capsule_id}, {"$set": update})
@@ -810,7 +839,7 @@ async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = N
                     )
                     if seo:
                         new_title = seo.get("title", "")[:140]
-                        new_tags = seo.get("tags", [])
+                        new_tags = filter_etsy_tags(seo.get("tags", []))[:MAX_TAGS]
                         new_desc = DESCRIPTION_TEMPLATE.format(
                             capsule_name=(full.get("capsule_name") or "").upper(),
                             back_graphic=(full.get("back_concept") or "").rstrip(".").lower(),
