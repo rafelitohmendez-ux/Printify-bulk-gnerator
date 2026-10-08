@@ -143,5 +143,6 @@ def test_prompts_keep_white_on_black_and_required_tags():
     assert "The front is a whisper; the back is a scream." in prompt
     assert "'Gothic Streetwear' and 'Back Print Shirt'" in prompt
     assert "cyber goth" in prompt.lower()
+    assert "20 characters or fewer" in prompt
     back = server.build_back_prompt("x")
     assert "#000000" in back and "no color" in back and "circuit linework" in back

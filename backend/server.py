@@ -365,7 +365,8 @@ def build_text_system_prompt(banned_words: List[str], title_formula: str, banned
         "to permanently disagree with each other. The back design must be a wordless illustration.\n\n"
         "For tags: of the 11 tags beyond 'Gothic Streetwear' and 'Back Print Shirt', make at least 2-3 cyber goth search "
         "terms when they fit the design (e.g. 'Cyber Goth Shirt', 'Cybergoth Clothing', 'Cyberpunk Tee', 'Techwear Shirt', "
-        "'Industrial Techno', 'Rave Goth Tee'). Still return EXACTLY 13 tags."
+        "'Industrial Techno', 'Rave Goth Tee'). Still return EXACTLY 13 tags. "
+        "Every tag must be 20 characters or fewer (Etsy's limit, spaces included) - tags over 20 are discarded."
     )
     if banned_words:
         joined = ", ".join(f"'{w}'" for w in banned_words)
