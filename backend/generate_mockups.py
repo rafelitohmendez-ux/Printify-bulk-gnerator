@@ -67,6 +67,9 @@ THEME_BACKGROUNDS = [
     ("diesel", "an oil-slicked engine yard at night, diesel haze, rusted pipework, industrial fuel-ritual atmosphere"),
     ("industrial", "an abandoned factory floor, rusted machinery, hanging chains, shafts of dusty light through broken skylights"),
 ]
+# Last Gemini image error (e.g. quota exhausted), so callers can tell it apart from an empty response
+LAST_IMAGE_ERROR: Optional[str] = None
+
 DEFAULT_BACKGROUND = "a dim industrial gothic interior, rusted metal surfaces, cold directional light, dust hanging in the air"
 
 
@@ -94,6 +97,8 @@ async def generate_background_image(
     the shirt unaltered. Otherwise falls back to describing the design in text
     (back_concept) for Gemini to reimagine from scratch. Returns raw image
     bytes, or None."""
+    global LAST_IMAGE_ERROR
+    LAST_IMAGE_ERROR = None
     if design_image_bytes is not None:
         prompt = (
             f"Place this exact design on a black t-shirt displayed upright and "
@@ -129,6 +134,7 @@ async def generate_background_image(
             config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
         )
     except Exception as exc:
+        LAST_IMAGE_ERROR = str(exc)
         print(f"    Gemini image generation error: {exc}")
         return None
     if not response.candidates:

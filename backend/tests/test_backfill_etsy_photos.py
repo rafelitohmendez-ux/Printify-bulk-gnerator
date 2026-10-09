@@ -76,6 +76,35 @@ def test_select_cyber_first_limit_and_skips():
     assert [l["listing_id"] for l, _, _ in selected] == [1, 2, 3, 4]
 
 
+def test_decide_with_recheck():
+    prod = product("p10", 10)
+    processed = {"p10"}
+    assert bf.decide(listing(10), prod, set(), set(), processed, {"p10": bf.RECHECK_MOCKUP}) == (
+        True, "needs atmospheric photo (rechecked: first Etsy image is a Printify mockup)")
+    assert bf.decide(listing(10), prod, set(), set(), processed, {"p10": bf.RECHECK_PHOTO}) == (
+        False, "already has atmospheric photo (rechecked: first Etsy image is not a mockup)")
+    assert bf.decide(listing(10), prod, set(), set(), processed, {"p10": "error: HTTP 500"}) == (
+        False, "in etsy_upload_processed.json, recheck failed (kept skipped)")
+    # Logged listings are never re-queued by a recheck
+    assert bf.decide(listing(10), prod, {"10"}, set(), processed, {"p10": bf.RECHECK_MOCKUP})[0] is False
+
+
+def test_classify_first_image_and_mockup_srcs():
+    assert bf.classify_first_image(0b1111, [(1 << 64) - 1, 0b1110]) == bf.RECHECK_MOCKUP  # 2nd at distance 1
+    assert bf.classify_first_image(0, [(1 << 64) - 1]) == bf.RECHECK_PHOTO
+    prod = {"images": [{"src": "a", "is_selected_for_publishing": False}, {"src": "b", "is_selected_for_publishing": True}]}
+    assert bf.mockup_srcs(prod) == ["b"]
+    assert bf.mockup_srcs({"images": [{"src": "a"}, {"src": "c"}]}) == ["a", "c"]
+
+
+def test_stop_reason():
+    assert "403" in bf.stop_reason(etsy_photos.EtsyAPIError("x", 403, "forbidden"))
+    assert "429" in bf.stop_reason(etsy_photos.EtsyAPIError("x", 429, "slow down"))
+    assert "quota" in bf.stop_reason(RuntimeError("Gemini returned no image: 429 RESOURCE_EXHAUSTED"))
+    assert bf.stop_reason(etsy_photos.EtsyAPIError("x", 400, "too many images")) is None
+    assert bf.stop_reason(RuntimeError("Gemini returned no image")) is None
+
+
 def test_cli_defaults_are_safe():
     args = bf.parse_args([])
     assert args.apply is False and args.limit == 5 and args.delay == 30 and not args.cyber_first
@@ -141,3 +170,31 @@ def test_apply_then_rerun_is_idempotent(harness, capsys):
     out = capsys.readouterr().out
     assert "already has atmospheric photo (etsy_photo_log)" in out
     assert "SUMMARY: 1 uploaded, 0 failed" in out
+
+
+def test_batches_stop_after_two_failures_in_a_batch(harness, monkeypatch, capsys):
+    db, processed = harness
+
+    async def failing(auth, db_, lst, prod):
+        processed.append(lst["listing_id"])
+        raise RuntimeError("Gemini returned no image")
+
+    monkeypatch.setattr(bf, "process_one", failing)
+    rc = asyncio.run(bf.main(bf.parse_args(["--apply", "--limit", "3", "--batch-size", "2", "--delay", "0"])))
+    out = capsys.readouterr().out
+    assert rc == 1 and processed == [1, 2]  # batch 2 never starts
+    assert "STOPPED EARLY: 2 listings failed in batch 1" in out
+    assert "FAILED 1: RuntimeError: Gemini returned no image" in out and "--listing-id <ID>" in out
+
+
+def test_quota_error_stops_immediately(harness, monkeypatch, capsys):
+    db, processed = harness
+
+    async def quota(auth, db_, lst, prod):
+        processed.append(lst["listing_id"])
+        raise RuntimeError("Gemini returned no image: 429 RESOURCE_EXHAUSTED")
+
+    monkeypatch.setattr(bf, "process_one", quota)
+    asyncio.run(bf.main(bf.parse_args(["--apply", "--limit", "3", "--delay", "0"])))
+    assert processed == [1]
+    assert "STOPPED EARLY: Gemini quota exhausted" in capsys.readouterr().out
