@@ -121,7 +121,8 @@ class FakeEtsy:
             if b'name="listing_image_id"' in body:
                 image_id = int(body.split(b'name="listing_image_id"\r\n\r\n')[1].split(b"\r\n")[0])
                 rank = int(body.split(b'name="rank"\r\n\r\n')[1].split(b"\r\n")[0])
-                self._rerank(image_id, rank)
+                # Like live Etsy: re-ranking an existing image doesn't shift the others (ties stay)
+                next(i for i in self.images if i["listing_image_id"] == image_id)["rank"] = rank
                 return httpx.Response(201, json={"listing_image_id": image_id, "rank": rank})
         return httpx.Response(404, text=f"unexpected {request.method} {url}")
 
@@ -364,6 +365,7 @@ def test_success_rank1_photo_and_back_mockup_rank2(db, etsy, env, printify, gemi
     assert etsy.rank_of(ATMOSPHERIC_ID) == 1
     assert etsy.rank_of(3) == 2  # back mockup identified by appearance and moved up
     assert etsy.rank_of(1) == 3  # blank front mockup pushed down
+    assert sorted(i["rank"] for i in etsy.images) == [1, 2, 3, 4]  # no ties left behind
     assert "moved to rank 2" in doc["etsy_photos_note"]
     log = asyncio.run(db[0].database[etsy_photos.PHOTO_LOG_COLLECTION].find_one({"listing_id": LISTING_ID}))
     assert log["status"] == "success" and log["printify_product_id"] == "pid-1" and log["source"] == "approve"
@@ -400,10 +402,40 @@ def test_no_clear_match_leaves_order_but_keeps_rank1(db, env, printify, gemini, 
 
 
 def test_dhash_matches_resized_copy_not_other_images():
-    back = etsy_photos.dhash(IMAGES["back"])
-    assert etsy_photos._hamming(back, etsy_photos.dhash(IMAGES["back_small"])) <= etsy_photos.BACK_MATCH_MAX_DISTANCE
-    assert etsy_photos._hamming(back, etsy_photos.dhash(IMAGES["front"])) > 40
-    assert etsy_photos._hamming(back, etsy_photos.dhash(IMAGES["noise"])) > etsy_photos.BACK_MATCH_MAX_DISTANCE
+    back = etsy_photos.mockup_hash(IMAGES["back"])
+    assert etsy_photos._hamming(back, etsy_photos.mockup_hash(IMAGES["back_small"])) <= etsy_photos.BACK_MATCH_MAX_DISTANCE
+    assert etsy_photos._hamming(back, etsy_photos.mockup_hash(IMAGES["front"])) > 100
+    assert etsy_photos._hamming(back, etsy_photos.mockup_hash(IMAGES["noise"])) > etsy_photos.BACK_MATCH_MAX_DISTANCE
+
+
+def shirt_mockup(design: bool, size=(600, 600)) -> bytes:
+    """Dark shirt on white; the back has a print in the middle, the front only a tiny chest logo."""
+    from PIL import ImageDraw
+
+    img = Image.new("RGB", size, "white")
+    w, h = size
+    d = ImageDraw.Draw(img)
+    d.rectangle((w * 0.15, h * 0.12, w * 0.85, h * 0.9), fill=(25, 25, 25))
+    if design:
+        rnd = random.Random(7)
+        for _ in range(60):
+            x, y = rnd.uniform(w * 0.3, w * 0.65), rnd.uniform(h * 0.25, h * 0.7)
+            d.line((x, y, x + rnd.uniform(-60, 60), y + rnd.uniform(-60, 60)), fill="white", width=3)
+    else:
+        d.ellipse((w * 0.38, h * 0.4, w * 0.4, h * 0.42), fill="white")
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=85)
+    return buf.getvalue()
+
+
+def test_mockup_hash_tells_blank_front_from_back():
+    # Regression: the 64-bit whole-image hash put these 2 apart (live listing 4591517122)
+    back, front = shirt_mockup(True), shirt_mockup(False)
+    back_etsy = shirt_mockup(True, (570, 570))
+    d_back = etsy_photos._hamming(etsy_photos.mockup_hash(back), etsy_photos.mockup_hash(back_etsy))
+    d_front = etsy_photos._hamming(etsy_photos.mockup_hash(back), etsy_photos.mockup_hash(front))
+    assert d_back <= etsy_photos.BACK_MATCH_MAX_DISTANCE
+    assert d_front - d_back >= etsy_photos.BACK_MATCH_MIN_MARGIN
 
 
 def test_upload_http_error_recorded(db, etsy, env, printify, gemini, caplog):

@@ -29,7 +29,7 @@ import os
 import re
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -49,10 +49,14 @@ RATE_LIMIT_MAX_RETRIES = 4
 RATE_LIMIT_BASE_DELAY_SECONDS = 2
 RATE_LIMIT_MAX_DELAY_SECONDS = 60
 
-# Back-mockup matching (perceptual dHash, 64 bits): accept the closest Etsy image only
-# if it's within MAX_DISTANCE and clearly closer than the runner-up.
-BACK_MATCH_MAX_DISTANCE = 10
-BACK_MATCH_MIN_MARGIN = 4
+# Back-mockup matching (perceptual dHash, 256 bits over the chest/back print area): accept
+# the closest Etsy image only if it's within MAX_DISTANCE and clearly closer than the runner-up.
+# A 64-bit whole-image hash can't tell a blank front mockup from the back mockup (both are a
+# dark shirt on white), so the hash is taken from the center crop where the print sits.
+MOCKUP_HASH_SIZE = 16
+MOCKUP_HASH_CROP = (0.25, 0.2, 0.75, 0.75)  # left, top, right, bottom as fractions
+BACK_MATCH_MAX_DISTANCE = 40
+BACK_MATCH_MIN_MARGIN = 16
 
 # Listings that got an atmospheric photo (pipeline or backfill), keyed by listing_id
 PHOTO_LOG_COLLECTION = "etsy_photo_log"
@@ -282,17 +286,25 @@ def back_mockup_src(product: Dict[str, Any]) -> Optional[str]:
 # -----------------------------
 # Image ranking on Etsy
 # -----------------------------
-def dhash(image_bytes: bytes) -> int:
-    """64-bit perceptual difference hash: survives resizing/re-encoding by Etsy's CDN."""
+def dhash(image_bytes: bytes, size: int = 8, crop: Optional[Tuple[float, float, float, float]] = None) -> int:
+    """size*size-bit perceptual difference hash: survives resizing/re-encoding by Etsy's CDN."""
     from PIL import Image
 
-    img = Image.open(io.BytesIO(image_bytes)).convert("L").resize((9, 8), Image.LANCZOS)
+    img = Image.open(io.BytesIO(image_bytes)).convert("L")
+    if crop:
+        w, h = img.size
+        img = img.crop((int(w * crop[0]), int(h * crop[1]), int(w * crop[2]), int(h * crop[3])))
+    img = img.resize((size + 1, size), Image.LANCZOS)
     px = list(img.getdata())
     bits = 0
-    for row in range(8):
-        for col in range(8):
-            bits = (bits << 1) | (px[row * 9 + col] > px[row * 9 + col + 1])
+    for row in range(size):
+        for col in range(size):
+            bits = (bits << 1) | (px[row * (size + 1) + col] > px[row * (size + 1) + col + 1])
     return bits
+
+
+def mockup_hash(image_bytes: bytes) -> int:
+    return dhash(image_bytes, MOCKUP_HASH_SIZE, MOCKUP_HASH_CROP)
 
 
 def _hamming(a: int, b: int) -> int:
@@ -313,21 +325,22 @@ async def move_back_mockup_to_rank2(
     if not back_src:
         return "back mockup reorder skipped: Printify product has no back mockup"
     try:
-        back_hash = dhash(await _download(back_src))
+        back_hash = mockup_hash(await _download(back_src))
     except Exception as e:
         return f"back mockup reorder skipped: could not load Printify back mockup ({_short(str(e), 120)})"
     resp = await auth.request("GET", f"/listings/{listing_id}/images")
     if resp.status_code >= 400:
         return f"back mockup reorder skipped: Etsy GET images HTTP {resp.status_code}"
+    images = resp.json().get("results") or []
     scored = []
-    for img in resp.json().get("results") or []:
+    for img in images:
         if img.get("listing_image_id") in exclude_ids:
             continue
         url = img.get("url_570xN") or img.get("url_fullxfull")
         if not url:
             continue
         try:
-            scored.append((_hamming(back_hash, dhash(await _download(url))), img))
+            scored.append((_hamming(back_hash, mockup_hash(await _download(url))), img))
         except Exception:
             continue
     if not scored:
@@ -338,15 +351,26 @@ async def move_back_mockup_to_rank2(
     if best_dist > BACK_MATCH_MAX_DISTANCE or (runner_up is not None and runner_up - best_dist < BACK_MATCH_MIN_MARGIN):
         return (f"back mockup reorder skipped: no clear match (best distance {best_dist}, "
                 f"runner-up {runner_up}); atmospheric photo is still rank 1")
-    if int(best.get("rank") or 0) == 2:
+    # Etsy doesn't shift the other images when one is re-ranked (it leaves a tie, and the tie
+    # can show the old image first), so give every remaining image an explicit rank from 3 on.
+    rest = [i for i in sorted(images, key=lambda i: int(i.get("rank") or 999))
+            if i is not best and i.get("listing_image_id") not in exclude_ids]
+    wanted = [(best, 2)] + [(img, n) for n, img in enumerate(rest, 3)]
+    moved_back = False
+    for img, rank in wanted:
+        if int(img.get("rank") or 0) == rank:
+            continue
+        resp = await auth.request(
+            "POST",
+            f"/shops/{auth.shop_id}/listings/{listing_id}/images",
+            files={"listing_image_id": (None, str(img["listing_image_id"])), "rank": (None, str(rank))},
+        )
+        if resp.status_code >= 400:
+            what = "back mockup reorder" if img is best else f"re-ranking image {img['listing_image_id']} to {rank}"
+            return f"{what} failed: HTTP {resp.status_code}: {_short(resp.text, 150)}"
+        moved_back = moved_back or img is best
+    if not moved_back:
         return "back mockup already at rank 2"
-    resp = await auth.request(
-        "POST",
-        f"/shops/{auth.shop_id}/listings/{listing_id}/images",
-        files={"listing_image_id": (None, str(best["listing_image_id"])), "rank": (None, "2")},
-    )
-    if resp.status_code >= 400:
-        return f"back mockup reorder failed: HTTP {resp.status_code}: {_short(resp.text, 150)}"
     return f"back mockup (image {best['listing_image_id']}) moved to rank 2"
 
 

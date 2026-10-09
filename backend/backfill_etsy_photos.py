@@ -41,7 +41,6 @@ from motor.motor_asyncio import AsyncIOMotorClient
 sys.path.insert(0, str(Path(__file__).parent))
 from bulk_seo_update import extract_back_concept  # noqa: E402
 from etsy_photos import (  # noqa: E402
-    BACK_MATCH_MAX_DISTANCE,
     PHOTO_LOG_COLLECTION,
     EtsyAPIError,
     EtsyAuth,
@@ -66,6 +65,7 @@ RECHECK_MOCKUP = "mockup"
 RECHECK_PHOTO = "photo"
 RECHECK_CONCURRENCY = 4
 RECHECK_MAX_MOCKUPS = 12  # Printify mockups compared per listing
+RECHECK_MAX_DISTANCE = 10  # 64-bit whole-image dHash: mockup vs atmospheric photo is ~20+
 QUOTA_PATTERN = re.compile(r"RESOURCE_EXHAUSTED|quota", re.IGNORECASE)
 
 
@@ -156,7 +156,7 @@ def stop_reason(error: Exception) -> Optional[str]:
 
 def classify_first_image(first_hash: int, mockup_hashes: List[int]) -> str:
     """RECHECK_MOCKUP if the listing's first image looks like one of the product's Printify mockups."""
-    if any(_hamming(first_hash, h) <= BACK_MATCH_MAX_DISTANCE for h in mockup_hashes):
+    if any(_hamming(first_hash, h) <= RECHECK_MAX_DISTANCE for h in mockup_hashes):
         return RECHECK_MOCKUP
     return RECHECK_PHOTO
 
