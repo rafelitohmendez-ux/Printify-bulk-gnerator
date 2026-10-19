@@ -102,7 +102,7 @@ const SeoPanel = ({ capsule, edits, onChangeEdits }) => {
         )}
       </Section>
 
-      <Section label="// THE GRIND - Description Template" testId="seo-description">
+      <Section label="// Listing Description" testId="seo-description">
         <pre className="text-xs text-zinc-300 font-body leading-relaxed whitespace-pre-wrap border-l-2 border-zinc-700 pl-4 max-h-72 overflow-y-auto">
           {capsule.description}
         </pre>

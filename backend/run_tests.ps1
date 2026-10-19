@@ -75,10 +75,10 @@ try {
     else { fail "TestGenerate::test_images_present" "b64 images missing or too short" }
 
     $lower = $cap.tags | ForEach-Object { $_.ToLower() }
-    if ($cap.tags.Count -eq 13 -and $lower -contains "gothic streetwear" -and $lower -contains "back print shirt") { ok "TestGenerate::test_tags_13_with_required" }
+    if ($cap.tags.Count -eq 13 -and $lower -contains "oversized goth shirt" -and $lower -contains "back print shirt") { ok "TestGenerate::test_tags_13_with_required" }
     else { fail "TestGenerate::test_tags_13_with_required" "tags=$($cap.tags -join ',')" }
 
-    if ($cap.description.StartsWith("THE GRIND //") -and $cap.description -match "Gildan 5000" -and $cap.description -match "Machine wash cold") { ok "TestGenerate::test_description_template" }
+    if ($cap.description.StartsWith("Oversized gothic graphic tee") -and $cap.description -match "Gildan 5000" -and $cap.description -match "Machine wash cold") { ok "TestGenerate::test_description_template" }
     else { fail "TestGenerate::test_description_template" "desc=$($cap.description.Substring(0,60))" }
 } catch {
     fail "TestGenerate::test_returns_valid_capsule" "500/timeout: $($_.Exception.Message)"
@@ -118,7 +118,7 @@ if ($CID) {
     } catch { fail "TestApprove::test_approve_capsule" $_ }
 
     try {
-        $list = Invoke-RestMethod "$BASE/capsules/approved" -TimeoutSec 15
+        $list = Invoke-RestMethod "$BASE/capsules/approved" -Headers $HDR -TimeoutSec 15
         $found = $list | Where-Object { $_.id -eq $CID }
         if ($found -and $found.status -eq "approved" -and (-not $found.front_image_b64)) { ok "TestApprove::test_approved_list_contains" }
         else { fail "TestApprove::test_approved_list_contains" "not found or wrong state" }
@@ -152,7 +152,7 @@ if ($c -eq 404) { ok "TestDeny::test_deny_unknown_404" } else { fail "TestDeny::
 
 # ── TestExportCSV ─────────────────────────────────────────────────────────────
 try {
-    $wc = [System.Net.WebClient]::new(); $bytes = $wc.DownloadData("$BASE/capsules/export.csv")
+    $wc = [System.Net.WebClient]::new(); $wc.Headers.Add("X-Admin-Key", $KEY); $bytes = $wc.DownloadData("$BASE/capsules/export.csv")
     $ct = $wc.ResponseHeaders["Content-Type"]; $cd = $wc.ResponseHeaders["Content-Disposition"]
     $body = [System.Text.Encoding]::UTF8.GetString($bytes)
     if ($ct -match "text/csv" -and $cd -match "attachment" -and $cd -match "midnightrotation_approved.csv" -and $body -match "capsule_name" -and $body -match "front_image_url") { ok "TestExportCSV::test_csv_export" }

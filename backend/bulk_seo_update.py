@@ -1,14 +1,17 @@
 """
 Bulk SEO updater: pulls every product from Printify, sends its existing
-title + back concept (extracted from description) to Gemini to generate
-an improved SEO title, 13 tags, and updated description, then pushes
-the updates back via Printify's update_product API.
+title + back concept (extracted from description) to Gemini for a design-specific
+keyword and design tags, builds the keyword-first title, 13 buyer-phrase tags and
+the clean description with seo.py, then pushes the updates back via Printify's
+update_product API.
 
 Usage:
     python bulk_seo_update.py                    # dry run, shows what would change
     python bulk_seo_update.py --apply            # apply to all products
     python bulk_seo_update.py --product-id XYZ   # dry run, single product
     python bulk_seo_update.py --product-id XYZ --apply  # apply, single product
+    python bulk_seo_update.py --apply --publish  # apply and re-sync title/description/tags to Etsy
+                                                 # (photos on Etsy are left untouched)
 """
 import argparse
 import asyncio
@@ -25,9 +28,13 @@ from google import genai
 from google.genai import types
 
 sys.path.insert(0, str(Path(__file__).parent))
-from printify_client import get_product, list_products, update_product, prioritize_back_mockup, PrintifyError  # noqa: E402
+from printify_client import (  # noqa: E402
+    PrintifyError, get_product, list_products, prioritize_back_mockup, publish_product_text, update_product,
+)
 from title_words import RECENT_TITLES_WINDOW, find_overused_words, overused_words_instruction  # noqa: E402
 from title_words import words as title_words  # noqa: E402
+import seo  # noqa: E402
+from seo import DESCRIPTION_TEMPLATE, build_description, extract_back_concept, extract_capsule_name  # noqa: E402,F401
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -35,84 +42,60 @@ load_dotenv(ROOT_DIR / ".env")
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 genai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-DESCRIPTION_TEMPLATE = """THE GRIND // {capsule_name}
-
-A premium, heavy-hitting alternative staple designed for the late-night rotation. Featuring a clean minimalist left-chest graphic on the front and an aggressive, oversized {back_graphic} filling the back.
-
-* Built on the classic Gildan 5000 heavy cotton tee for a structured, boxy streetwear fit.
-* Premium DTG printing with stark white ink for maximum contrast.
-* 100% Cotton (Fiber content may vary for different colors).
-* True to size (Size up for an oversized look).
-
-Care Instructions: Machine wash cold, inside out, with like colors. Tumble dry low or hang dry to preserve print longevity."""
+# Words fixed in the title formulas repeat by design; never flag them as overused
+FORMULA_WORDS = {
+    w for f in seo.GOTHIC_TITLE_FORMULAS + seo.CYBER_TITLE_FORMULAS for w in title_words(re.sub(r"\{\w+\}", " ", f))
+}
 
 SEO_SYSTEM_PROMPT = """You are an expert Etsy SEO specialist for MidnightRotation, a gothic industrial dark alternative streetwear brand.
 
-Given a product's capsule name and back graphic concept, generate:
-1. A unique, highly specific SEO title (max 140 chars) that:
-   - Starts with the capsule name
-   - Includes the most specific visual element from the back concept
-   - Uses high-search-volume Etsy keywords for this niche
-   - Avoids generic phrases used across all listings
-   - Format: "{capsule_name} - {specific visual descriptor} | {2-3 search terms}"
+Given a product's capsule name and back graphic concept, return:
 
-2. Exactly 13 SEO tags that:
-   - MUST include "Gothic Streetwear" and "Back Print Shirt"
-   - Include 2 gift/occasion tags (e.g. "Goth Gift For Him", "Alt Fashion Gift")
-   - Include 2 broad aesthetic umbrella tags (e.g. "Dark Academia Tshirt", "Grunge Clothing")
-   - Include 9 tags drawn ONLY from visual elements explicitly described in the
-     back concept — do NOT invent details not mentioned. If the concept mentions
-     monks, chains, and steam pistons, tag those. Do not add visual elements
-     (textures, objects, materials) that aren't in the description.
-   - Each tag max 20 characters
-   - Natural Etsy search phrases, never generic
-   - Every tag must be a 2-4 word search phrase a buyer would actually type
-     on Etsy — never a bare noun or single concept word. "Steam Piston Tee"
-     not "Steam Pistons". "Hooded Monk Shirt" not "Monks".
+1. "secondary_keyword": ONE buyer search phrase (2-5 words, max 34 characters) naming the
+   most specific visual subject of the back graphic, ending in Tee or Shirt.
+   Examples: "Plague Doctor Back Print Tee", "Crow Skull Graphic Shirt", "Glitch Saint Tee".
+   Do NOT include the capsule name. The shop builds the full title itself; the poetic
+   design name goes AFTER the buyer keywords.
+
+2. "tags": 5 design-specific Etsy tags that:
+   - Name visual elements explicitly described in the back concept - do NOT invent details.
+   - Are 2-4 word phrases a buyer would actually type, each ending in a product word
+     (Shirt, Tee, Tshirt, Clothing): "Hooded Monk Shirt" not "Monks", "Steam Piston Tee" not "Steam Pistons".
+   - Are max 20 characters each.
+   - Are NEVER image-prompt fragments like "Ash Cloud Graphic", "Bone Soot Design", "Rust Texture Art".
+   The shop adds its own broad tags (Oversized Goth Shirt, Back Print Shirt, Graphic Tee Men...) - don't repeat them.
 
 Return ONLY raw JSON, no prose, no code fences:
 {
-  "title": "...",
-  "tags": ["tag1", "tag2", ..., "tag13"]
+  "secondary_keyword": "...",
+  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"]
 }"""
 
 
-def extract_back_concept(description: str) -> str:
-    """Extract the back graphic concept from a product description."""
-    match = re.search(
-        r"aggressive, oversized (.+?) filling the back",
-        description,
-        re.DOTALL,
-    )
-    if match:
-        return match.group(1).strip()
-    return ""
-
-
-def extract_capsule_name(title: str) -> str:
-    """Extract capsule name (everything before first - or |)."""
-    name = re.split(r"[-|]", title)[0].strip()
-    name = re.sub(r"\s+[Tt]ee$", "", name).strip()
-    return name
-
-
 async def generate_seo(
-    capsule_name: str, back_concept: str, overused_words: Optional[List[str]] = None
+    capsule_name: str,
+    back_concept: str,
+    overused_words: Optional[List[str]] = None,
+    category: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Call Gemini to generate improved title and tags.
+    """Ask Gemini for a design-specific keyword + design tags, then build the
+    keyword-first title and 13 buyer-phrase tags with seo.py.
 
-    overused_words: words recent titles keep repeating; the title is asked to avoid
-    them (except where they're part of the capsule name, which the title must start with).
+    overused_words: words recent titles keep repeating; the keyword is asked to avoid
+    them (except where they're part of the capsule name).
+    category: 'cyber' or 'gothic'; inferred from the name/concept when omitted.
+    Returns {"title", "tags", "secondary_keyword"} or None on failure.
     """
+    category = category or seo.infer_category(f"{capsule_name} {back_concept}")
     prompt = (
         f"Capsule name: {capsule_name}\n"
         f"Back graphic concept: {back_concept}\n\n"
-        "Generate improved SEO title and 13 tags for this listing."
+        "Generate the secondary keyword and 5 design tags for this listing."
     )
     name_words = set(title_words(capsule_name))
     avoid = [w for w in (overused_words or []) if w.lower() not in name_words]
     if avoid:
-        prompt += "\n\n" + overused_words_instruction(avoid) + " This applies to the title."
+        prompt += "\n\n" + overused_words_instruction(avoid) + " This applies to the secondary keyword."
     try:
         response = await asyncio.to_thread(
             genai_client.models.generate_content,
@@ -126,24 +109,15 @@ async def generate_seo(
         if not match:
             return None
         data = json.loads(match.group(0))
-        tags = data.get("tags") or []
-        required = ["Gothic Streetwear", "Back Print Shirt"]
-        for r in required:
-            if not any(str(t).lower() == r.lower() for t in tags):
-                tags.insert(0, r)
-        # Etsy caps tags at 20 chars: drop long ones (truncating cuts mid-word) and case-insensitive dupes
-        seen = set()
-        kept = []
-        for t in tags:
-            t = str(t).strip()
-            if t and len(t) <= 20 and t.lower() not in seen:
-                seen.add(t.lower())
-                kept.append(t)
-        data["tags"] = kept[:13]
-        return data
     except Exception as e:
         print(f"    Gemini error: {e}")
         return None
+    secondary = seo.clean_secondary(data.get("secondary_keyword"), category)
+    return {
+        "title": seo.build_title(capsule_name, secondary, category),
+        "tags": seo.build_tags(data.get("tags") or [], category),
+        "secondary_keyword": secondary,
+    }
 
 
 async def fetch_target_products(shop_id: int, product_id: Optional[str]) -> List[Dict[str, Any]]:
@@ -172,7 +146,7 @@ async def fetch_target_products(shop_id: int, product_id: Optional[str]) -> List
     return all_products
 
 
-async def main(apply: bool, product_id: Optional[str]):
+async def main(apply: bool, product_id: Optional[str], publish: bool = False):
     client = AsyncIOMotorClient(os.environ["MONGO_URL"])
     db = client[os.environ["DB_NAME"]]
     settings = await db.settings.find_one({"id": "config"}, {"_id": 0}) or {}
@@ -210,22 +184,22 @@ async def main(apply: bool, product_id: Optional[str]):
 
         print(f"  Back concept:  {back_concept[:80]}")
 
-        overused = find_overused_words(new_titles[-RECENT_TITLES_WINDOW:])
+        overused = find_overused_words(new_titles[-RECENT_TITLES_WINDOW:], extra_exclude=FORMULA_WORDS)
         if overused:
             print(f"  Avoiding overused words: {', '.join(overused)}")
-        seo = await generate_seo(capsule_name, back_concept, overused_words=overused)
-        if not seo:
+        seo_data = await generate_seo(
+            capsule_name, back_concept, overused_words=overused,
+            category=seo.infer_category(" ".join([current_title, " ".join(p.get("tags") or [])])),
+        )
+        if not seo_data:
             print(f"  ERROR — Gemini returned no usable data")
             errors += 1
             continue
 
-        new_title = seo.get("title", "")[:140]
+        new_title = seo_data.get("title", "")[:140]
         new_titles.append(new_title)
-        new_tags = seo.get("tags", [])
-        new_desc = DESCRIPTION_TEMPLATE.format(
-            capsule_name=capsule_name.upper(),
-            back_graphic=back_concept.rstrip(".").lower(),
-        )
+        new_tags = seo_data.get("tags", [])
+        new_desc = build_description(capsule_name, back_concept)
 
         print(f"  New title:     {new_title}")
         print(f"  New tags:      {', '.join(new_tags)}")
@@ -239,6 +213,12 @@ async def main(apply: bool, product_id: Optional[str]):
                 })
                 print(f"  APPLIED v")
                 updated += 1
+                if publish and (p.get("external") or {}).get("id"):
+                    try:
+                        await publish_product_text(shop_id, pid)
+                        print(f"  Synced text to Etsy v")
+                    except PrintifyError as e:
+                        print(f"  WARNING: Etsy sync failed: {e}")
                 try:
                     await prioritize_back_mockup(shop_id, pid)
                     print(f"  Thumbnail re-set to back-default v")
@@ -264,5 +244,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true", help="Push updates to Printify (default is dry-run)")
     parser.add_argument("--product-id", default=None, help="Only process this Printify product ID")
+    parser.add_argument("--publish", action="store_true",
+                        help="With --apply: re-sync title/description/tags of published products to Etsy")
     args = parser.parse_args()
-    asyncio.run(main(apply=args.apply, product_id=args.product_id))
+    if args.publish and not args.apply:
+        parser.error("--publish requires --apply")
+    asyncio.run(main(apply=args.apply, product_id=args.product_id, publish=args.publish))

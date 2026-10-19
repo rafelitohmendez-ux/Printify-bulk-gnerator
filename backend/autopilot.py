@@ -62,7 +62,8 @@ from printify_client import (
     prioritize_back_mockup,
     PrintifyError,
 )
-from bulk_seo_update import generate_seo, extract_back_concept, extract_capsule_name, DESCRIPTION_TEMPLATE
+from bulk_seo_update import generate_seo, extract_back_concept, extract_capsule_name
+from seo import build_description
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -467,10 +468,7 @@ async def run_new_listing_pipeline(
 
         new_title = seo.get("title", "")[:140]
         new_tags = seo.get("tags", [])
-        new_desc = DESCRIPTION_TEMPLATE.format(
-            capsule_name=capsule_name.upper(),
-            back_graphic=back_concept.rstrip(".").lower(),
-        )
+        new_desc = build_description(capsule_name, back_concept)
 
         print(f"    Title: {new_title}")
         print(f"    Tags:  {', '.join(new_tags[:5])}...")

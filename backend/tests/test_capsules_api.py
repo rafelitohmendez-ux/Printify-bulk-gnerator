@@ -68,12 +68,12 @@ class TestGenerate:
         assert isinstance(tags, list)
         assert len(tags) == 13, f"expected 13 tags, got {len(tags)}: {tags}"
         lower = [t.lower() for t in tags]
-        assert "gothic streetwear" in lower
+        assert "oversized goth shirt" in lower
         assert "back print shirt" in lower
 
     def test_generate_description_template(self, generated_capsule):
         desc = generated_capsule["description"]
-        assert desc.startswith("THE GRIND //")
+        assert desc.startswith("Oversized gothic graphic tee")
         assert "Gildan 5000" in desc
         assert "Machine wash cold" in desc
         # capsule_name in upper case appears

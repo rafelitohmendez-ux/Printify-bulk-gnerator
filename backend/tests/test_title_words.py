@@ -51,12 +51,10 @@ def test_stopwords_and_short_words_ignored():
 
 def test_formula_vocabulary_excluded_in_server():
     # Words fixed in the title formulas repeat by design
-    assert {"oversized", "midnight", "back", "print", "heavy", "cotton"} <= server.FORMULA_WORDS
-    names = ["Iron Vigil", "Ash Psalm", "Bone Choir", "Rust Saint", "Null Hour",
-             "Glass Relic", "Wire Halo", "Salt Moth", "Lead Bell", "Coal Wake"]
-    hints = ["Monastic", "Occult", "Hydraulic", "Graveyard", "Folk Horror",
-             "Bone Church", "Storm Liturgy", "Crow Sermon", "Wire Crown", "Ash Liturgy"]
-    titles = [f.format(capsule_name=n, theme_hint=h) for f, n, h in zip(server.SEO_TITLE_FORMULAS, names, hints)]
+    assert {"oversized", "back", "print", "industrial", "streetwear"} <= server.FORMULA_WORDS
+    names = ["Iron Vigil", "Ash Psalm", "Bone Choir", "Rust Saint", "Null Hour"]
+    titles = [f.format(capsule_name=n, secondary="Back Print Graphic Tee")
+              for f, n in zip(server.SEO_TITLE_FORMULAS, names)]
     assert server.find_overused_words(titles, extra_exclude=server.FORMULA_WORDS) == []
 
 

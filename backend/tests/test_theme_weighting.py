@@ -119,29 +119,39 @@ def test_custom_themes_join_auto_pool():
 def test_title_formulas_by_category():
     assert server.title_formulas_for("cyber") is server.CYBER_SEO_TITLE_FORMULAS
     assert server.title_formulas_for("gothic") is server.SEO_TITLE_FORMULAS
-    assert len(server.SEO_TITLE_FORMULAS) == 10
+    assert len(server.SEO_TITLE_FORMULAS) >= 4
     assert 3 <= len(server.CYBER_SEO_TITLE_FORMULAS) <= 4
     terms = ("cyber goth", "cybergoth", "cyberpunk", "techwear", "industrial techno")
     for f in server.CYBER_SEO_TITLE_FORMULAS:
         assert any(term in f.lower() for term in terms), f
 
 
-def test_titles_fit_etsy_limit():
+def test_titles_are_keyword_first_and_fit_etsy_limit():
     hints = list(server.THEME_HINT_OVERRIDES.values()) + [
         server.default_theme_hint("cyber"), server.default_theme_hint("gothic"),
     ]
-    longest_hint = max(hints, key=len)
+    longest_secondary = max((f"{h} Graphic Tee" for h in hints), key=len)
     for f in server.SEO_TITLE_FORMULAS + server.CYBER_SEO_TITLE_FORMULAS:
-        assert "{capsule_name}" in f
-        title = f.format(capsule_name=LONGEST_CAPSULE_NAME, theme_hint=longest_hint)
+        assert "{capsule_name}" in f and "{secondary}" in f
+        assert f.index("{capsule_name}") > f.index(",")  # buyer keywords first, design name after
+        title = f.format(capsule_name=LONGEST_CAPSULE_NAME, secondary=longest_secondary)
         assert len(title) <= ETSY_TITLE_LIMIT, (len(title), title)
+        assert "goth" in " ".join(title.split()[:3]).lower() or "cyber" in title.split()[0].lower()
+
+
+def test_theme_secondary_is_a_valid_keyword():
+    for key in server.THEME_HINT_OVERRIDES:
+        sec = server.theme_secondary(key, "gothic")
+        assert server.seo.clean_secondary(sec) == sec, sec
 
 
 def test_prompts_keep_white_on_black_and_required_tags():
     prompt = server.build_text_system_prompt([], server.SEO_TITLE_FORMULAS[0])
     assert "stark white ink on solid black" in prompt
     assert "The front is a whisper; the back is a scream." in prompt
-    assert "'Gothic Streetwear' and 'Back Print Shirt'" in prompt
+    assert "'Oversized Goth Shirt'" in prompt and "'Back Print Shirt'" in prompt
+    assert "Ash Cloud Graphic" in prompt  # the anti-fragment example
+    assert '"title"' not in prompt  # titles are built in code now
     assert "cyber goth" in prompt.lower()
     assert "20 characters or fewer" in prompt
     back = server.build_back_prompt("x")

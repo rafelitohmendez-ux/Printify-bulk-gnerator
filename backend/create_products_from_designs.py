@@ -32,7 +32,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 sys.path.insert(0, str(Path(__file__).parent))
 from printify_client import push_capsule_as_draft, PrintifyError  # noqa: E402
-from bulk_seo_update import generate_seo, DESCRIPTION_TEMPLATE  # noqa: E402
+from bulk_seo_update import generate_seo  # noqa: E402
+from seo import build_description  # noqa: E402
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -108,10 +109,7 @@ async def main(apply: bool, product_id: Optional[str] = None):
                 continue
             title = seo.get("title", "")[:140]
             tags = seo.get("tags", [])
-            description = DESCRIPTION_TEMPLATE.format(
-                capsule_name=capsule_name.upper(),
-                back_graphic=back_concept.rstrip(".").lower(),
-            )
+            description = build_description(capsule_name, back_concept)
 
             capsule: Dict[str, Any] = {
                 "capsule_name": capsule_name,

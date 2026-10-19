@@ -24,7 +24,18 @@ export const regenerateImage = (id, side) =>
 export const listApproved = () => api.get("/capsules/approved").then((r) => r.data);
 export const fetchStats = () => api.get("/capsules/stats").then((r) => r.data);
 export const queueStatus = () => api.get("/capsules/queue/status").then((r) => r.data);
-export const exportCsvUrl = () => `${API_BASE}/capsules/export.csv`;
+// The export needs the admin key header, so download it as a blob instead of a plain link
+export const downloadCsv = async () => {
+  const r = await api.get("/capsules/export.csv", { responseType: "blob" });
+  const url = URL.createObjectURL(r.data);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "midnightrotation_approved.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+};
 export const imageUrl = (id, side, bust) =>
   `${API_BASE}/capsules/${id}/image/${side}${bust ? `?t=${bust}` : ""}`;
 export const pushToPrintify = (id) =>

@@ -114,10 +114,11 @@ class FakeEtsy:
             if b'name="image"' in body:
                 if self.upload_status >= 400:
                     return httpx.Response(self.upload_status, text="Etsy is having a bad day")
+                rank = int(body.split(b'name="rank"\r\n\r\n')[1].split(b"\r\n")[0])
                 self.images.append({"listing_image_id": ATMOSPHERIC_ID, "rank": 99,
                                     "url_570xN": "https://i.etsystatic.test/atmo.jpg"})
-                self._rerank(ATMOSPHERIC_ID, 1)
-                return httpx.Response(201, json={"listing_image_id": ATMOSPHERIC_ID, "rank": 1})
+                self._rerank(ATMOSPHERIC_ID, min(rank, len(self.images)))
+                return httpx.Response(201, json={"listing_image_id": ATMOSPHERIC_ID, "rank": rank})
             if b'name="listing_image_id"' in body:
                 image_id = int(body.split(b'name="listing_image_id"\r\n\r\n')[1].split(b"\r\n")[0])
                 rank = int(body.split(b'name="rank"\r\n\r\n')[1].split(b"\r\n")[0])
@@ -352,8 +353,8 @@ def test_listing_appears_after_polling_and_transient_errors(db, etsy, env, print
     assert printify["polls"] == 4
 
 
-# ---- success: rank 1 photo + back mockup to rank 2 ----------------------------------------------
-def test_success_rank1_photo_and_back_mockup_rank2(db, etsy, env, printify, gemini):
+# ---- success: back mockup rank 1, lifestyle photo rank 4 (4-photo checklist) --------------------
+def test_success_back_mockup_rank1_lifestyle_rank4(db, etsy, env, printify, gemini):
     cap = seed_capsule(db)
     run(db, cap["id"])
     doc = stored(db, cap["id"])
@@ -361,18 +362,19 @@ def test_success_rank1_photo_and_back_mockup_rank2(db, etsy, env, printify, gemi
     assert doc["etsy_listing_id"] == LISTING_ID
     (upload,) = etsy.photo_uploads()
     assert upload.url.path == f"/v3/application/shops/{ENV['ETSY_SHOP_ID']}/listings/{LISTING_ID}/images"
-    assert b'name="rank"\r\n\r\n1' in upload.content and b"fake photo" in upload.content
-    assert etsy.rank_of(ATMOSPHERIC_ID) == 1
-    assert etsy.rank_of(3) == 2  # back mockup identified by appearance and moved up
-    assert etsy.rank_of(1) == 3  # blank front mockup pushed down
+    assert b'name="rank"\r\n\r\n4' in upload.content and b"fake photo" in upload.content
+    assert etsy.rank_of(3) == 1  # back mockup identified by appearance -> primary thumbnail
+    assert etsy.rank_of(1) == 2  # front mockup next
+    assert etsy.rank_of(2) == 3
+    assert etsy.rank_of(ATMOSPHERIC_ID) == 4  # lifestyle photo last
     assert sorted(i["rank"] for i in etsy.images) == [1, 2, 3, 4]  # no ties left behind
-    assert "moved to rank 2" in doc["etsy_photos_note"]
+    assert "at rank 1" in doc["etsy_photos_note"] and "lifestyle photo at rank 4" in doc["etsy_photos_note"]
     log = asyncio.run(db[0].database[etsy_photos.PHOTO_LOG_COLLECTION].find_one({"listing_id": LISTING_ID}))
     assert log["status"] == "success" and log["printify_product_id"] == "pid-1" and log["source"] == "approve"
     assert gemini == [cap["id"]]
 
 
-def test_back_mockup_already_rank2_not_reordered(db, env, printify, gemini, monkeypatch):
+def test_back_mockup_already_rank1_not_reordered(db, env, printify, gemini, monkeypatch):
     fake = FakeEtsy(listing_images=[
         {"listing_image_id": 3, "rank": 1, "url_570xN": "https://i.etsystatic.test/back.jpg"},
         {"listing_image_id": 1, "rank": 2, "url_570xN": "https://i.etsystatic.test/front.jpg"},
@@ -381,12 +383,13 @@ def test_back_mockup_already_rank2_not_reordered(db, env, printify, gemini, monk
         transport=httpx.MockTransport(fake), timeout=timeout))
     cap = seed_capsule(db)
     run(db, cap["id"])
-    # Upload at rank 1 pushed the back mockup (was rank 1) to rank 2 already
+    # Only 2 listing images: the lifestyle photo lands at rank 3 (as close to 4 as exists); nothing moves
     assert fake.reorders() == []
-    assert stored(db, cap["id"])["etsy_photos_note"] == "back mockup already at rank 2"
+    assert fake.rank_of(3) == 1 and fake.rank_of(ATMOSPHERIC_ID) == 3
+    assert stored(db, cap["id"])["etsy_photos_note"] == "back mockup (image 3) at rank 1; lifestyle photo at rank 3"
 
 
-def test_no_clear_match_leaves_order_but_keeps_rank1(db, env, printify, gemini, monkeypatch):
+def test_no_clear_match_keeps_mockup_order_and_lifestyle_not_first(db, env, printify, gemini, monkeypatch):
     fake = FakeEtsy(listing_images=[
         {"listing_image_id": 1, "rank": 1, "url_570xN": "https://i.etsystatic.test/front.jpg"},
         {"listing_image_id": 2, "rank": 2, "url_570xN": "https://i.etsystatic.test/noise.jpg"},
@@ -397,8 +400,29 @@ def test_no_clear_match_leaves_order_but_keeps_rank1(db, env, printify, gemini, 
     run(db, cap["id"])
     doc = stored(db, cap["id"])
     assert doc["etsy_photos_status"] == "success"
-    assert fake.reorders() == [] and fake.rank_of(ATMOSPHERIC_ID) == 1
+    assert fake.rank_of(1) == 1 and fake.rank_of(2) == 2 and fake.rank_of(ATMOSPHERIC_ID) == 3
     assert "no clear match" in doc["etsy_photos_note"]
+
+
+def test_reorder_existing_listing_moves_old_photo_to_rank4(db, env, monkeypatch):
+    """Old listings: atmospheric photo at rank 1, back mockup at 2 -> back 1, photo 4."""
+    fake = FakeEtsy(listing_images=[
+        {"listing_image_id": ATMOSPHERIC_ID, "rank": 1, "url_570xN": "https://i.etsystatic.test/atmo.jpg"},
+        {"listing_image_id": 3, "rank": 2, "url_570xN": "https://i.etsystatic.test/back.jpg"},
+        {"listing_image_id": 1, "rank": 3, "url_570xN": "https://i.etsystatic.test/front.jpg"},
+        {"listing_image_id": 2, "rank": 4, "url_570xN": "https://i.etsystatic.test/noise.jpg"},
+    ])
+    monkeypatch.setattr(etsy_photos, "_http_client", lambda timeout=60.0: httpx.AsyncClient(
+        transport=httpx.MockTransport(fake), timeout=timeout))
+
+    async def go():
+        auth = etsy_photos.EtsyAuth(db[1])
+        await auth.load()
+        return await etsy_photos.arrange_listing_photos(auth, LISTING_ID, PRINTIFY_BACK_SRC, [ATMOSPHERIC_ID])
+
+    note = asyncio.run(go())
+    assert [fake.rank_of(i) for i in (3, 1, 2, ATMOSPHERIC_ID)] == [1, 2, 3, 4], note
+    assert note == "back mockup (image 3) at rank 1; lifestyle photo at rank 4"
 
 
 def test_dhash_matches_resized_copy_not_other_images():
@@ -454,9 +478,9 @@ def test_upload_http_error_recorded(db, etsy, env, printify, gemini, caplog):
 def test_status_visible_in_approved_list(db, etsy, env, printify, gemini):
     cap = seed_capsule(db)
     run(db, cap["id"])
-    (item,) = asyncio.run(server.list_approved())
+    (item,) = asyncio.run(server.list_approved(None))
     assert item.etsy_photos_status == "success" and item.etsy_photos_error is None
-    assert "rank 2" in item.etsy_photos_note
+    assert "at rank 1" in item.etsy_photos_note
 
 
 # ---- endpoints ----------------------------------------------------------------------------------
