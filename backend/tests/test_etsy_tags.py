@@ -46,42 +46,53 @@ def test_filter_drops_long_and_dupes_without_truncating():
     assert not any(LONG.startswith(t) and t != LONG for t in out)  # nothing cut mid-word
 
 
-def test_finalize_keeps_required_first_and_fills_to_13_with_category_fallbacks():
+def test_finalize_keeps_required_first_and_fills_to_13_with_category_pool():
     tags = server.finalize_tags([LONG, "Glitch Saint Tee", "glitch saint tee", "back print shirt"], "cyber")
     assert tags[:2] == server.REQUIRED_TAGS
+    assert tags[2] == "Glitch Saint Tee"
     assert len(tags) == 13
     assert_valid(tags)
-    assert "Glitch Saint Tee" in tags and LONG not in tags
-    assert set(server.FALLBACK_TAGS["cyber"]) <= set(tags)  # own category used before the other
+    assert LONG not in tags
+    assert tags[3:] == server.FALLBACK_TAGS["cyber"][:10]
 
 
-def test_finalize_gothic_uses_gothic_fallbacks_first():
+def test_finalize_gothic_uses_gothic_pool():
     tags = server.finalize_tags(["Bone Church Tee"], "gothic")
     assert tags[:3] == server.REQUIRED_TAGS + ["Bone Church Tee"]
-    assert tags[3:8] == server.FALLBACK_TAGS["gothic"]
+    assert tags[3:] == server.FALLBACK_TAGS["gothic"][:10]
     assert len(tags) == 13
 
 
-def test_finalize_caps_at_13_and_prefers_llm_tags_over_fallbacks():
-    llm = [f"Tag Number {i}" for i in range(20)]
+def test_finalize_rejects_prompt_fragment_tags():
+    llm = ["Ash Cloud Graphic", "Bone Soot Design", "Rusted Piston Art", "Monks", "Plague Doctor Shirt"]
+    tags = server.finalize_tags(llm, "gothic")
+    assert "Plague Doctor Shirt" in tags
+    for bad in llm[:4]:
+        assert bad not in tags
+    assert len(tags) == 13
+
+
+def test_finalize_caps_design_tags_and_always_13():
+    llm = [f"Design {i} Shirt" for i in range(10)]
     tags = server.finalize_tags(llm, "cyber")
-    assert len(tags) == 13 and tags[2:] == llm[:11]
-
-
-def test_finalize_never_exceeds_available_tags():
-    # Required + 5 own + 5 other fallbacks = 12 unique: accept fewer than 13 rather than invent tags
+    assert len(tags) == 13 and tags[2:7] == llm[:5]  # at most 5 design tags, then the buyer pool
     tags = server.finalize_tags([LONG] * 13, "cyber")
-    assert len(tags) == 12
+    assert len(tags) == 13
     assert_valid(tags)
+
+
+def test_finalize_respects_banned_words():
+    tags = server.finalize_tags(["Occult Sigil Shirt"], "gothic", ["occult"])
+    assert not any("occult" in t.lower() for t in tags)
 
 
 # ---- llm_generate_text -------------------------------------------------------
 @pytest.mark.parametrize("category", ["cyber", "gothic"])
 def test_llm_generate_text_enforces_limit(monkeypatch, category):
     payload = {
-        "capsule_name": "Glitch Saint", "title": "t", "front_concept": "f", "back_concept": "b",
+        "capsule_name": "Glitch Saint", "front_concept": "f", "back_concept": "b",
         "tags": ["Gothic Streetwear", LONG, "Cyberpunk Gothic Shirt Gift", "Glitch Saint Tee",
-                 "GLITCH SAINT TEE", "Back Print Shirt"],
+                 "GLITCH SAINT TEE", "Back Print Shirt", "Ash Cloud Graphic"],
     }
     monkeypatch.setattr(server, "genai_client", fake_genai(payload))
     data = asyncio.run(server.llm_generate_text("seed", [], category=category))
@@ -89,19 +100,36 @@ def test_llm_generate_text_enforces_limit(monkeypatch, category):
     assert tags[:2] == server.REQUIRED_TAGS
     assert len(tags) == 13
     assert_valid(tags)
-    assert "Glitch Saint Tee" in tags
-    assert tags[3:8] == server.FALLBACK_TAGS[category]
+    assert "Ash Cloud Graphic" not in tags
+    # Valid design phrases kept in order (over-long and duplicate ones dropped), then the buyer pool
+    assert tags[2:4] == ["Gothic Streetwear", "Glitch Saint Tee"]
+    assert tags[4:] == server.FALLBACK_TAGS[category][:9]
 
 
 # ---- generate_seo (bulk_seo_update) --------------------------------------------
-def test_generate_seo_drops_instead_of_truncating(monkeypatch):
-    payload = {"title": "t", "tags": [LONG, "Bone Church Tee", "bone church tee", "Goth Gift For Him"]}
+def test_generate_seo_builds_keyword_first_title_and_13_tags(monkeypatch):
+    payload = {"secondary_keyword": "Bone Altar Back Print Tee",
+               "tags": [LONG, "Bone Church Tee", "bone church tee", "Skull Altar Shirt", "Bone Soot Design"]}
     monkeypatch.setattr(bulk_seo_update, "genai_client", fake_genai(payload))
-    data = asyncio.run(bulk_seo_update.generate_seo("Bone Church", "ossuary"))
+    data = asyncio.run(bulk_seo_update.generate_seo("Bone Church", "ossuary", category="gothic"))
     tags = data["tags"]
     assert_valid(tags)
+    assert len(tags) == 13
     assert LONG[:20] not in tags  # the old t[:20] behavior produced "Industrial Gothic St"
-    assert {"Gothic Streetwear", "Back Print Shirt", "Bone Church Tee", "Goth Gift For Him"} == set(tags)
+    assert {"Oversized Goth Shirt", "Back Print Shirt", "Bone Church Tee", "Skull Altar Shirt"} <= set(tags)
+    assert "Bone Soot Design" not in tags
+    title = data["title"]
+    assert len(title) <= 140
+    assert not title.startswith("Bone Church")
+    assert " - Bone Church | " in title and "Bone Altar Back Print Tee" in title
+
+
+def test_generate_seo_falls_back_when_keyword_is_junk(monkeypatch):
+    monkeypatch.setattr(bulk_seo_update, "genai_client", fake_genai({"secondary_keyword": "x" * 80, "tags": []}))
+    data = asyncio.run(bulk_seo_update.generate_seo("Glitch Saint", "a glitching saint", category="cyber"))
+    assert "Back Print Graphic Tee - Glitch Saint" in data["title"]
+    assert data["title"].split(",")[0] in {f.split(",")[0] for f in server.CYBER_SEO_TITLE_FORMULAS}
+    assert len(data["tags"]) == 13
 
 
 # ---- approve endpoint ------------------------------------------------------------
@@ -144,7 +172,8 @@ def test_approve_auto_push_filters_seo_tags_sent_to_printify(mock_db, monkeypatc
     async def fake_push(**kw):
         return {"id": "pid123"}
 
-    async def fake_seo(name, concept, overused_words=None):
+    async def fake_seo(name, concept, overused_words=None, category=None):
+        sent["category"] = category
         return {"title": "New Title", "tags": ["Gothic Streetwear", LONG, "Rave Goth Tee", "rave goth tee"]}
 
     async def fake_update(shop_id, pid, body):
@@ -166,4 +195,7 @@ def test_approve_auto_push_filters_seo_tags_sent_to_printify(mock_db, monkeypatc
 
     asyncio.run(server.approve_capsule(cap["id"], None, None))
     assert sent["tags"] == ["Gothic Streetwear", "Rave Goth Tee"]
+    assert sent["description"].startswith("Oversized gothic graphic tee")
+    stored = asyncio.run(capsules.find_one({"id": cap["id"]}))
+    assert stored["seo_title"] == "New Title" and stored["seo_tags"] == sent["tags"]
     assert scheduled == [cap["id"]]  # photos handed off to the background pipeline

@@ -3,10 +3,13 @@
 Flow (triggered after auto-push publishes a capsule, or via the retry endpoint):
   1. Poll Printify until the product has an external Etsy listing ID (Printify
      publishes to Etsy asynchronously, so the listing doesn't exist right away).
-  2. Generate a themed atmospheric photo with Gemini (generate_mockups.py).
-  3. Upload it to the Etsy listing as the primary image (rank 1), then find the
-     back-print mockup among the listing's images (perceptual hash vs Printify's
-     back mockup) and re-rank it to 2.
+  2. Generate a high-contrast lifestyle photo with Gemini (generate_mockups.py).
+  3. Arrange the listing per the 4-photo checklist:
+       1. back-print mockup (primary thumbnail; found among the listing's images by
+          perceptual hash vs Printify's back mockup)
+       2. front left-chest mockup (Printify's next image)
+       3. size chart (uploaded by hand on Etsy; that slot is left to whatever is next)
+       4. lifestyle photo (the generated one)
 The outcome is saved on the capsule as etsy_photos_status / etsy_photos_error.
 
 Etsy OAuth tokens live in Mongo (settings collection, {"id": "etsy_auth"}, the
@@ -58,7 +61,11 @@ MOCKUP_HASH_CROP = (0.25, 0.2, 0.75, 0.75)  # left, top, right, bottom as fracti
 BACK_MATCH_MAX_DISTANCE = 40
 BACK_MATCH_MIN_MARGIN = 16
 
-# Listings that got an atmospheric photo (pipeline or backfill), keyed by listing_id
+# 4-photo checklist: back print primary (1), front close-up (2), size chart (3), lifestyle (4)
+BACK_MOCKUP_RANK = 1
+LIFESTYLE_RANK = 4
+
+# Listings that got a lifestyle photo (pipeline or backfill), keyed by listing_id
 PHOTO_LOG_COLLECTION = "etsy_photo_log"
 
 _sleep = asyncio.sleep  # patched in tests
@@ -318,46 +325,57 @@ async def _download(url: str) -> bytes:
         return resp.content
 
 
-async def move_back_mockup_to_rank2(
-    auth: "EtsyAuth", listing_id: str, back_src: Optional[str], exclude_ids: List[int]
+async def arrange_listing_photos(
+    auth: "EtsyAuth", listing_id: str, back_src: Optional[str], lifestyle_ids: List[int]
 ) -> str:
-    """Find the listing's back-print mockup by appearance and re-rank it to 2. Returns a note."""
-    if not back_src:
-        return "back mockup reorder skipped: Printify product has no back mockup"
-    try:
-        back_hash = mockup_hash(await _download(back_src))
-    except Exception as e:
-        return f"back mockup reorder skipped: could not load Printify back mockup ({_short(str(e), 120)})"
+    """Put the back-print mockup at rank 1 and the lifestyle photo(s) at rank 4. Returns a note.
+
+    The back mockup is found by appearance (perceptual hash vs Printify's back mockup). If it
+    can't be identified with confidence, only the lifestyle photo is placed.
+    """
     resp = await auth.request("GET", f"/listings/{listing_id}/images")
     if resp.status_code >= 400:
-        return f"back mockup reorder skipped: Etsy GET images HTTP {resp.status_code}"
-    images = resp.json().get("results") or []
-    scored = []
-    for img in images:
-        if img.get("listing_image_id") in exclude_ids:
-            continue
-        url = img.get("url_570xN") or img.get("url_fullxfull")
-        if not url:
-            continue
+        return f"photo arrangement skipped: Etsy GET images HTTP {resp.status_code}"
+    images = sorted(resp.json().get("results") or [], key=lambda i: int(i.get("rank") or 999))
+    lifestyle = [i for i in images if i.get("listing_image_id") in lifestyle_ids]
+    others = [i for i in images if i.get("listing_image_id") not in lifestyle_ids]
+
+    best, why_not = None, ""
+    if not back_src:
+        why_not = "Printify product has no back mockup"
+    else:
         try:
-            scored.append((_hamming(back_hash, mockup_hash(await _download(url))), img))
-        except Exception:
-            continue
-    if not scored:
-        return "back mockup reorder skipped: no comparable Etsy images"
-    scored.sort(key=lambda s: s[0])
-    best_dist, best = scored[0]
-    runner_up = scored[1][0] if len(scored) > 1 else None
-    if best_dist > BACK_MATCH_MAX_DISTANCE or (runner_up is not None and runner_up - best_dist < BACK_MATCH_MIN_MARGIN):
-        return (f"back mockup reorder skipped: no clear match (best distance {best_dist}, "
-                f"runner-up {runner_up}); atmospheric photo is still rank 1")
+            back_hash = mockup_hash(await _download(back_src))
+        except Exception as e:
+            back_hash, why_not = None, f"could not load Printify back mockup ({_short(str(e), 120)})"
+        if back_hash is not None:
+            scored = []
+            for img in others:
+                url = img.get("url_570xN") or img.get("url_fullxfull")
+                if not url:
+                    continue
+                try:
+                    scored.append((_hamming(back_hash, mockup_hash(await _download(url))), img))
+                except Exception:
+                    continue
+            scored.sort(key=lambda s: s[0])
+            if not scored:
+                why_not = "no comparable Etsy images"
+            else:
+                best_dist = scored[0][0]
+                runner_up = scored[1][0] if len(scored) > 1 else None
+                if best_dist > BACK_MATCH_MAX_DISTANCE or (
+                        runner_up is not None and runner_up - best_dist < BACK_MATCH_MIN_MARGIN):
+                    why_not = f"no clear match (best distance {best_dist}, runner-up {runner_up})"
+                else:
+                    best = scored[0][1]
+
     # Etsy doesn't shift the other images when one is re-ranked (it leaves a tie, and the tie
-    # can show the old image first), so give every remaining image an explicit rank from 3 on.
-    rest = [i for i in sorted(images, key=lambda i: int(i.get("rank") or 999))
-            if i is not best and i.get("listing_image_id") not in exclude_ids]
-    wanted = [(best, 2)] + [(img, n) for n, img in enumerate(rest, 3)]
-    moved_back = False
-    for img, rank in wanted:
+    # can show the old image first), so give every image an explicit rank.
+    order = ([best] if best else []) + [i for i in others if i is not best]
+    slot = max(0, min(LIFESTYLE_RANK - 1, len(order)))
+    order = order[:slot] + lifestyle + order[slot:]
+    for rank, img in enumerate(order, 1):
         if int(img.get("rank") or 0) == rank:
             continue
         resp = await auth.request(
@@ -366,34 +384,38 @@ async def move_back_mockup_to_rank2(
             files={"listing_image_id": (None, str(img["listing_image_id"])), "rank": (None, str(rank))},
         )
         if resp.status_code >= 400:
-            what = "back mockup reorder" if img is best else f"re-ranking image {img['listing_image_id']} to {rank}"
-            return f"{what} failed: HTTP {resp.status_code}: {_short(resp.text, 150)}"
-        moved_back = moved_back or img is best
-    if not moved_back:
-        return "back mockup already at rank 2"
-    return f"back mockup (image {best['listing_image_id']}) moved to rank 2"
+            return f"re-ranking image {img['listing_image_id']} to {rank} failed: HTTP {resp.status_code}: {_short(resp.text, 150)}"
+    life_rank = order.index(lifestyle[0]) + 1 if lifestyle else None
+    life_note = f"lifestyle photo at rank {life_rank}" if life_rank else "no lifestyle photo"
+    if best:
+        return f"back mockup (image {best['listing_image_id']}) at rank 1; {life_note}"
+    return f"back mockup not moved: {why_not}; {life_note}"
 
 
-async def upload_primary_photo(
+async def upload_lifestyle_photo(
     auth: "EtsyAuth", listing_id: str, image_bytes: bytes, file_name: str, back_src: Optional[str]
 ) -> str:
-    """Upload the atmospheric photo as rank 1, then put the back mockup at rank 2. Returns a note.
+    """Upload the lifestyle photo, then arrange the listing per the 4-photo checklist. Returns a note.
 
-    Raises EtsyAPIError if the upload itself fails (the reorder is best-effort).
+    Raises EtsyAPIError if the upload itself fails (the arrangement is best-effort).
     """
     resp = await auth.request(
         "POST",
         f"/shops/{auth.shop_id}/listings/{listing_id}/images",
         files={"image": (file_name, image_bytes, "image/png")},
-        data={"rank": "1"},
+        data={"rank": str(LIFESTYLE_RANK)},
     )
     if resp.status_code >= 400:
         raise EtsyAPIError("Etsy image upload", resp.status_code, resp.text)
     new_id = (resp.json() or {}).get("listing_image_id")
     try:
-        return await move_back_mockup_to_rank2(auth, listing_id, back_src, [new_id] if new_id else [])
+        return await arrange_listing_photos(auth, listing_id, back_src, [new_id] if new_id else [])
     except Exception as e:
-        return f"back mockup reorder failed: {type(e).__name__}: {_short(str(e), 150)}"
+        return f"photo arrangement failed: {type(e).__name__}: {_short(str(e), 150)}"
+
+
+# Old name kept for scripts that import it
+upload_primary_photo = upload_lifestyle_photo
 
 
 async def log_listing_photo(log_coll, listing_id: str, product_id: Optional[str], source: str, note: str) -> None:
@@ -409,7 +431,7 @@ async def log_listing_photo(log_coll, listing_id: str, product_id: Optional[str]
 # Pipeline for one approved capsule
 # -----------------------------
 async def _generate_photo(capsule: Dict[str, Any]) -> Optional[bytes]:
-    """Generate the atmospheric photo (imported lazily so a Gemini/config problem is a recorded failure)."""
+    """Generate the lifestyle photo (imported lazily so a Gemini/config problem is a recorded failure)."""
     from generate_mockups import generate_background_image, infer_theme_prompt
 
     scene_prompt = infer_theme_prompt({
@@ -439,7 +461,7 @@ async def run_etsy_photos(
     poll_timeout: float = LISTING_POLL_TIMEOUT_SECONDS,
     poll_interval: float = LISTING_POLL_INTERVAL_SECONDS,
 ) -> Dict[str, Any]:
-    """Generate + upload the atmospheric photo for one capsule and record the outcome on it."""
+    """Generate + upload the lifestyle photo for one capsule, arrange the listing photos, record the outcome."""
     try:
         capsule = await capsules_coll.find_one({"id": capsule_id}, {"_id": 0})
         if not capsule:
@@ -472,13 +494,13 @@ async def run_etsy_photos(
 
         image_bytes = await _generate_photo(capsule)
         if not image_bytes:
-            return await _record(capsules_coll, capsule_id, "failed", "Gemini returned no atmospheric image",
+            return await _record(capsules_coll, capsule_id, "failed", "Gemini returned no lifestyle image",
                                  etsy_listing_id=listing_id)
 
         cname = re.sub(r"[^a-z0-9]+", "_", (capsule.get("capsule_name") or pid).lower()).strip("_")[:40] or pid
-        note = await upload_primary_photo(auth, listing_id, image_bytes, f"{cname}_etsy.png", back_mockup_src(product))
+        note = await upload_lifestyle_photo(auth, listing_id, image_bytes, f"{cname}_etsy.png", back_mockup_src(product))
         await log_listing_photo(capsules_coll.database[PHOTO_LOG_COLLECTION], listing_id, pid, "approve", note)
-        logger.info(f"Uploaded atmospheric photo to Etsy listing {listing_id} for capsule {capsule_id} ({pid}); {note}")
+        logger.info(f"Uploaded lifestyle photo to Etsy listing {listing_id} for capsule {capsule_id} ({pid}); {note}")
         return await _record(capsules_coll, capsule_id, "success", None, etsy_listing_id=listing_id, etsy_photos_note=note)
     except EtsyAPIError as e:
         return await _record(capsules_coll, capsule_id, "failed", str(e))

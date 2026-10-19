@@ -86,6 +86,17 @@ def infer_theme_prompt(product: Dict[str, Any]) -> str:
     return DEFAULT_BACKGROUND
 
 
+# Listing photo brief: high contrast, shirt dominates the frame. The themed scene is only
+# a hint at the edges - dark-on-dark scenes made the black shirt disappear in thumbnails.
+PHOTO_BRIEF = (
+    "PHOTO BRIEF: high-contrast product photography. The black shirt fills at least 80% of the "
+    "frame, centered, edge to edge with only a thin margin. Light-to-mid grey backdrop (bright "
+    "concrete or seamless paper) so the black fabric stands out sharply; the theme ({scene}) is "
+    "suggested only by subtle props or texture at the very edges, never a dark scene. Even, bright, "
+    "soft studio light; the white print is crisp and fully readable. Square 1:1."
+)
+
+
 async def generate_background_image(
     scene_prompt: str,
     back_concept: str,
@@ -101,10 +112,10 @@ async def generate_background_image(
     LAST_IMAGE_ERROR = None
     if design_image_bytes is not None:
         prompt = (
-            f"Place this exact design on a black t-shirt displayed upright and "
-            f"hanging naturally in {scene_prompt}, back facing camera. The design "
+            f"Place this exact design on the back of a black t-shirt displayed upright and "
+            f"hanging naturally, back facing camera. The design "
             f"must appear exactly as shown on the shirt — do not alter or reimagine "
-            f"it. Cinematic lighting, gothic industrial aesthetic, photorealistic "
+            f"it. {PHOTO_BRIEF.format(scene=scene_prompt)} Photorealistic "
             f"product photography. The shirt is NOT laying flat. "
             f"The design is printed directly on the fabric with no border, frame, "
             f"mat, or box around it — it is not displayed as separate framed "
@@ -115,10 +126,10 @@ async def generate_background_image(
         contents = [types.Part.from_bytes(data=design_image_bytes, mime_type="image/png"), prompt]
     else:
         prompt = (
-            f"A black heavy cotton t-shirt displayed naturally in {scene_prompt}, "
+            f"A black heavy cotton t-shirt, "
             f"the back of the shirt facing camera, featuring {back_concept} printed in "
-            f"stark white ink. Cinematic lighting, gothic industrial aesthetic, "
-            f"photorealistic product photography. "
+            f"stark white ink. {PHOTO_BRIEF.format(scene=scene_prompt)} "
+            f"Photorealistic product photography. "
             f"The shirt is displayed upright and hanging naturally, back facing the camera "
             f"directly. The shirt is NOT laying flat, NOT on a surface, NOT folded. "
             f"It is suspended or hanging in the environment. The design is printed "

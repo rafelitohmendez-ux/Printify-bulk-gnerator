@@ -1,10 +1,12 @@
 """
-Backfill atmospheric photos onto existing Etsy listings
-=======================================================
+Backfill lifestyle photos onto existing Etsy listings
+=====================================================
 For live Etsy listings created before the automatic photo pipeline worked:
-generates a themed atmospheric photo with Gemini (using the Printify back print
-as the design reference), uploads it as the PRIMARY image (rank 1) and moves the
-back-print mockup to rank 2 (same code path as the deployed app, etsy_photos.py).
+generates a high-contrast lifestyle photo with Gemini (using the Printify back print
+as the design reference), uploads it at rank 4 and puts the back-print mockup at
+rank 1 (the 4-photo checklist; same code path as the deployed app, etsy_photos.py).
+To fix listings that already have an old atmospheric photo at rank 1, run
+reorder_listing_photos.py instead.
 
 Safe to re-run: listings that already got a photo are skipped, based on
   - the etsy_photo_log Mongo collection (written by this script and the app)
@@ -50,7 +52,7 @@ from etsy_photos import (  # noqa: E402
     back_mockup_src,
     dhash,
     log_listing_photo,
-    upload_primary_photo,
+    upload_lifestyle_photo,
 )
 from printify_client import list_products  # noqa: E402
 
@@ -114,7 +116,7 @@ def decide(
     if rechecked:
         reason += " (rechecked: first Etsy image is a Printify mockup)"
     if not back_mockup_src(product):
-        reason += " (no Printify back mockup: text-only photo, no rank-2 reorder)"
+        reason += " (no Printify back mockup: text-only photo, back mockup not moved)"
     return True, reason
 
 
@@ -290,7 +292,7 @@ async def process_one(auth: EtsyAuth, db, listing: Dict[str, Any], product: Dict
         error = getattr(generate_mockups, "LAST_IMAGE_ERROR", None)
         raise RuntimeError(f"Gemini returned no image{f': {error}' if error else ''}")
     name = re.sub(r"[^a-z0-9]+", "_", (listing.get("title") or lid).lower()).strip("_")[:40] or lid
-    note = await upload_primary_photo(auth, lid, image, f"{name}_etsy.png", back_src)
+    note = await upload_lifestyle_photo(auth, lid, image, f"{name}_etsy.png", back_src)
     await log_listing_photo(db[PHOTO_LOG_COLLECTION], lid, str(product.get("id")), "backfill", note)
     return note
 
@@ -376,7 +378,7 @@ async def main(args: argparse.Namespace) -> int:
             try:
                 note = await process_one(auth, db, listing, product)
                 done += 1
-                print(f"    OK - photo is rank 1; {note}")
+                print(f"    OK - {note}")
             except Exception as e:
                 batch_failed += 1
                 failures.append((lid, f"{type(e).__name__}: {str(e)[:300]}"))

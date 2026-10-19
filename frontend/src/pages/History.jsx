@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { DownloadSimple, Archive, Storefront, ArrowUpRight, ArrowsClockwise } from "@phosphor-icons/react";
-import { listApproved, exportCsvUrl, imageUrl, pushToPrintify } from "@/lib/api";
+import { listApproved, downloadCsv, imageUrl, pushToPrintify } from "@/lib/api";
 
 const PrintifyBadge = ({ status, productId, error, onPush, pushing }) => {
   if (status === "success") {
@@ -94,14 +94,15 @@ const History = () => {
             </p>
           </div>
         </div>
-        <a
+        <button
+          type="button"
           data-testid="history-export-btn"
-          href={exportCsvUrl()}
+          onClick={() => downloadCsv().catch(() => toast.error("CSV export failed"))}
           className="flex items-center gap-2 px-4 py-3 bg-white text-black font-heading uppercase text-sm tracking-[0.2em] hover:bg-zinc-200 transition-colors"
         >
           <DownloadSimple size={18} weight="bold" />
           Export CSV
-        </a>
+        </button>
       </div>
 
       {loading ? (

@@ -7,6 +7,7 @@ Features:
 - Inline title/tag editing pre-approve
 - Single-side image regeneration
 - TTL cleanup of orphan drafts (1 hour)
+- Etsy SEO rules (keyword-first titles, buyer-phrase tags, clean description) live in seo.py
 """
 import asyncio
 import base64
@@ -47,6 +48,8 @@ from printify_client import (
     update_product,
 )
 from bulk_seo_update import generate_seo
+import seo
+from seo import build_description, build_title, filter_etsy_tags
 from title_words import RECENT_TITLES_WINDOW, find_overused_words, overused_words_instruction
 from title_words import words as title_word_list
 import etsy_photos
@@ -86,34 +89,19 @@ QUEUE_TICK_SECONDS = 2
 CLEANUP_TICK_SECONDS = 5 * 60  # 5 min
 GENERATION_TIMEOUT_SECONDS = 120
 
-SEO_TITLE_FORMULAS = [
-    "{capsule_name} - Oversized Back Print T-Shirt | Gothic Industrial Streetwear | Dark Alt Y2K Tee",
-    "{capsule_name} | Midnight Rotation Drop | Gothic Back Print Heavy Tee | Industrial Goth Streetwear",
-    "{capsule_name} Tee - Dark Alt Streetwear | Oversized Back Graphic | Industrial Gothic Y2K",
-    "{capsule_name} - Heavy Cotton Back Print Tee | MidnightRotation | Dark Streetwear | Gothic Industrial",
-    "{capsule_name} | {theme_hint} Tee | Oversized Back Print | Dark Academia Streetwear Gift",
-    "{capsule_name} Shirt - {theme_hint} Graphic Tee | Gothic Streetwear | Unisex Heavy Cotton",
-    "{capsule_name} | Alt Streetwear Tee | {theme_hint} Back Print | Y2K Grunge Gothic Shirt",
-    "{capsule_name} - {theme_hint} Tee | Midnight Rotation | Oversized Streetwear | Goth Gift Idea",
-    "{capsule_name} Tee | Dark {theme_hint} Graphic | Industrial Streetwear | Back Print Heavy Cotton",
-    "{capsule_name} - {theme_hint} Oversized Tee | Gothic Industrial | Dark Alt Streetwear Shirt",
-]
-
+# Keyword-first title formulas live in seo.py:
+#   "{primary}, {secondary} - {capsule_name} | {style}"
+SEO_TITLE_FORMULAS = seo.GOTHIC_TITLE_FORMULAS
 # Used instead of SEO_TITLE_FORMULAS when the theme's category is "cyber"
-CYBER_SEO_TITLE_FORMULAS = [
-    "{capsule_name} | Cyber Goth Back Print Tee | {theme_hint} | Industrial Techno Streetwear",
-    "{capsule_name} - Cybergoth Oversized Tee | {theme_hint} Graphic | Techwear Gothic Shirt",
-    "{capsule_name} Tee | Cyberpunk Gothic Back Print | {theme_hint} | Dark Techwear Unisex",
-    "{capsule_name} - {theme_hint} Cyber Goth Shirt | Industrial Techno Rave Tee | Back Print",
-]
+CYBER_SEO_TITLE_FORMULAS = seo.CYBER_TITLE_FORMULAS
 
 # Words baked into the title formulas repeat by design; never flag them as overused
 FORMULA_WORDS = {
     w for f in SEO_TITLE_FORMULAS + CYBER_SEO_TITLE_FORMULAS for w in title_word_list(re.sub(r"\{\w+\}", " ", f))
 }
 
-# Words pulled from the theme prompt to slot into {theme_hint} so titles
-# differentiate by actual design content instead of repeating a fixed phrase.
+# Theme-specific words for the title's secondary keyword ("{hint} Graphic Tee") so
+# titles differentiate by actual design content instead of repeating a fixed phrase.
 THEME_HINT_OVERRIDES = {
     "religious_industrial": "Religious Industrial",
     "post_punk_machinery": "Post-Punk",
@@ -208,15 +196,12 @@ DEFAULT_THEMES: List[Dict[str, str]] = [
 # Fraction of auto-mode picks drawn from the cyber category (rest come from gothic)
 CYBER_THEME_WEIGHT = 0.6
 
-# Etsy tag rules
-MAX_TAGS = 13
-ETSY_TAG_MAX_LEN = 20
-REQUIRED_TAGS = ["Gothic Streetwear", "Back Print Shirt"]
-# Used to top tags back up to MAX_TAGS when over-long/duplicate LLM tags are dropped
-FALLBACK_TAGS = {
-    "cyber": ["Cyber Goth Shirt", "Cybergoth Tee", "Techwear Shirt", "Rave Goth Tee", "Cyberpunk Shirt"],
-    "gothic": ["Goth Shirt", "Dark Academia Tee", "Alt Clothing", "Occult Shirt", "Industrial Goth"],
-}
+# Etsy tag rules (see seo.py)
+MAX_TAGS = seo.MAX_TAGS
+ETSY_TAG_MAX_LEN = seo.ETSY_TAG_MAX_LEN
+REQUIRED_TAGS = seo.REQUIRED_TAGS
+# Buyer-phrase pools used to top tags up to MAX_TAGS after required + design tags
+FALLBACK_TAGS = seo.CORE_TAGS
 
 NICHE_THEME_KEYS = {
     "religious_industrial",
@@ -260,6 +245,7 @@ class Capsule(BaseModel):
     description: str
     front_concept: str
     back_concept: str
+    back_summary: Optional[str] = None  # short noun phrase used in the description
     tags: List[str]
     front_image_b64: Optional[str] = None
     back_image_b64: Optional[str] = None
@@ -277,6 +263,7 @@ class CapsulePublic(BaseModel):
     description: str
     front_concept: str
     back_concept: str
+    back_summary: Optional[str] = None
     tags: List[str]
     status: str
     theme_seed: Optional[str] = None
@@ -329,23 +316,14 @@ class ApprovePayload(BaseModel):
 
 
 # -----------------------------
-# Description template
+# Description template (seo.build_description fills it)
 # -----------------------------
-DESCRIPTION_TEMPLATE = """THE GRIND // {capsule_name}
-
-A premium, heavy-hitting alternative staple designed for the late-night rotation. Featuring a clean minimalist left-chest graphic on the front and an aggressive, oversized {back_graphic} filling the back.
-
-* Built on the classic Gildan 5000 heavy cotton tee for a structured, boxy streetwear fit.
-* Premium DTG printing with stark white ink for maximum contrast.
-* 100% Cotton (Fiber content may vary for different colors).
-* True to size (Size up for an oversized look).
-
-Care Instructions: Machine wash cold, inside out, with like colors. Tumble dry low or hang dry to preserve print longevity."""
+DESCRIPTION_TEMPLATE = seo.DESCRIPTION_TEMPLATE
 
 
 def build_text_system_prompt(
     banned_words: List[str],
-    title_formula: str,
+    title_formula: Optional[str] = None,  # unused: titles are built in code (seo.build_title); kept for callers
     banned_names: Optional[List[str]] = None,
     overused_words: Optional[List[str]] = None,
 ) -> str:
@@ -360,18 +338,15 @@ def build_text_system_prompt(
         "You generate ONE shirt design capsule at a time. Return ONLY raw JSON, no prose, no code fences. Schema:\n"
         "{\n"
         "  \"capsule_name\": \"2-3 word evocative name (e.g., 'Iron Vigil', 'Hollow Hours', 'Ash Liturgy', 'Concrete Saints')\",\n"
-        f"  \"title\": \"SEO product title following this exact formula: '{title_formula}'\",\n"
         "  \"front_concept\": \"STRICTLY a single, ultra-minimal MICRO-GRAPHIC for the left-chest / center-front position. Must be ONE isolated symbol or compact mark - a single sigil, a small monogram, a tiny industrial icon, a compact occult glyph, a minimal geometric mark, a single rune, a tiny seal, a clean wordmark in 1-2 letters, or a small abstract icon. Stark, clean, industrial linework only. NO scenes. NO multiple elements. NO illustrations of objects or figures. ONE symbol on a void. Keep under 15 words.\",\n"
         "  \"back_concept\": \"One sentence describing a large oversized back graphic that fills the back: detailed, monolithic gothic/industrial imagery. Keep under 25 words.\",\n"
-        "  \"tags\": [\"array of EXACTLY 13 SEO tags composed as follows: "
-        "(1) MUST include 'Gothic Streetwear' and 'Back Print Shirt'. "
-        "(2) At least 2 gift/occasion tags tailored to this specific design — vary the phrasing naturally per capsule "
-        "(e.g. 'Gift For Goth', 'Alt Streetwear Gift', 'Unique Tee Gift Idea', 'Gift For Him Alternative', "
-        "'Gothic Gift For Her', 'Dark Aesthetic Gift'). "
-        "(3) At least 2 broad umbrella aesthetic tags that capture high-volume searches beyond this design's specific theme "
-        "(e.g. 'Dark Academia Tshirt', 'Grunge Shirt', 'Alt Clothing', 'Unisex Streetwear', 'Alternative Fashion', 'Indie Goth Tee'). "
-        "(4) The remaining 7 tags must be specific to this design's theme, imagery, and mood. "
-        "All 13 must read as natural, on-brand Etsy search terms — never generic or repetitive across capsules.\"]\n"
+        "  \"back_summary\": \"A short NOUN PHRASE (6-14 words, no ending period) naming what the back graphic shows, "
+        "written to complete the sentence 'The back carries a large, detailed illustration of ___.' "
+        "Example: 'a plague doctor kneeling inside a rusted reliquary'. Do NOT start with 'an illustration of'.\",\n"
+        "  \"tags\": [\"EXACTLY 5 design-specific Etsy search phrases a real shopper would type for THIS design's "
+        "subject. Each 2-4 words, max 20 characters, and MUST end in a product word: Shirt, Tee, Tshirt or Clothing. "
+        "Good: 'Plague Doctor Shirt', 'Crow Skull Tee', 'Occult Sigil Shirt', 'Glitch Saint Tee'. "
+        "NEVER image-prompt fragments like 'Ash Cloud Graphic', 'Bone Soot Design' or 'Rusted Piston Art'.\"]\n"
         "}\n\n"
         "For front_concept specifically: think 'a tiny ink stamp', 'a watch-dial-sized mark', 'a single hand-pulled glyph'. NEVER a full illustration. NEVER multiple visual elements. The front is a whisper; the back is a scream.\n\n"
         "For back_concept: be SPECIFIC, dense, monolithic. Reference texture, action, decay, religious or industrial machinery. "
@@ -379,9 +354,9 @@ def build_text_system_prompt(
         "banners with words, or any readable writing as part of the back graphic. Image generation invents different "
         "wording every time such text isn't specified verbatim, which causes the printed shirt and its marketing photos "
         "to permanently disagree with each other. The back design must be a wordless illustration.\n\n"
-        "For tags: of the 11 tags beyond 'Gothic Streetwear' and 'Back Print Shirt', make at least 2-3 cyber goth search "
-        "terms when they fit the design (e.g. 'Cyber Goth Shirt', 'Cybergoth Clothing', 'Cyberpunk Tee', 'Techwear Shirt', "
-        "'Industrial Techno', 'Rave Goth Tee'). Still return EXACTLY 13 tags. "
+        "For tags: name the design's concrete subject the way a buyer searches (when the design is cyber, phrases like "
+        "'Cyber Goth Shirt' or 'Glitch Saint Tee' fit). The shop adds its own broad tags ('Oversized Goth Shirt', "
+        "'Back Print Shirt', etc.) - do not repeat those. "
         "Every tag must be 20 characters or fewer (Etsy's limit, spaces included) - tags over 20 are discarded."
     )
     if banned_words:
@@ -419,33 +394,29 @@ def title_formulas_for(category: str) -> List[str]:
     return CYBER_SEO_TITLE_FORMULAS if category == "cyber" else SEO_TITLE_FORMULAS
 
 
-def filter_etsy_tags(tags: List[str]) -> List[str]:
-    """Drop tags over Etsy's 20-char limit (never truncate mid-word) and case-insensitive duplicates."""
-    seen = set()
-    kept = []
-    for t in tags or []:
-        t = str(t).strip()
-        if t and len(t) <= ETSY_TAG_MAX_LEN and t.lower() not in seen:
-            seen.add(t.lower())
-            kept.append(t)
-    return kept
-
-
-def finalize_tags(tags: List[str], category: str) -> List[str]:
-    """Required tags first, then valid LLM tags, then category fallbacks (other category's last) up to MAX_TAGS."""
-    other = "gothic" if category == "cyber" else "cyber"
-    ordered = (
-        REQUIRED_TAGS
-        + list(tags or [])
-        + FALLBACK_TAGS.get(category, FALLBACK_TAGS["gothic"])
-        + FALLBACK_TAGS[other]
-    )
-    return filter_etsy_tags(ordered)[:MAX_TAGS]
+def finalize_tags(tags: List[str], category: str, banned_words: Optional[List[str]] = None) -> List[str]:
+    """Required tags, then valid design tags (prompt fragments dropped), then the category's buyer-phrase pool."""
+    return seo.build_tags(tags, category, banned_words)
 
 
 def default_theme_hint(category: str) -> str:
-    """{theme_hint} for themes without a THEME_HINT_OVERRIDES entry (e.g. custom themes)."""
+    """Theme hint for themes without a THEME_HINT_OVERRIDES entry (e.g. custom themes)."""
     return "Cyber Goth" if category == "cyber" else "Industrial Gothic"
+
+
+def theme_secondary(theme_key: Optional[str], category: str) -> str:
+    """Design-specific secondary title keyword, e.g. 'Plague Gothic Graphic Tee'."""
+    hint = THEME_HINT_OVERRIDES.get(theme_key or "", default_theme_hint(category))
+    return f"{hint} Graphic Tee"
+
+
+def capsule_category(doc: dict) -> str:
+    """Category of a stored capsule: from its theme_seed when known, else inferred from its text."""
+    seed = (doc.get("theme_seed") or "").strip().lower()
+    for t in DEFAULT_THEMES:
+        if seed and seed in (t["name"].lower(), t["key"]):
+            return theme_category(t)
+    return seo.infer_category(" ".join([seed, doc.get("title") or "", " ".join(doc.get("tags") or [])]))
 
 
 def record_theme_use(recently_used: List[str], key: str) -> List[str]:
@@ -515,12 +486,8 @@ def resolve_theme(settings: dict) -> dict:
 # AI generation
 # -----------------------------
 async def llm_generate_text(theme_prompt: str, banned_words: List[str], banned_names: Optional[List[str]] = None, theme_key: Optional[str] = None, category: str = "gothic", overused_words: Optional[List[str]] = None) -> dict:
-    raw_formula = random.choice(title_formulas_for(category))
-    theme_hint = THEME_HINT_OVERRIDES.get(theme_key or "", default_theme_hint(category))
-    # Bake theme_hint in now so titles differentiate by actual theme content;
-    # {capsule_name} is left as a literal placeholder for the LLM to fill in.
-    title_formula = raw_formula.replace("{theme_hint}", theme_hint)
-    system_prompt = build_text_system_prompt(banned_words, title_formula, banned_names, overused_words)
+    # The title is built in code (seo.build_title), not by the LLM
+    system_prompt = build_text_system_prompt(banned_words, None, banned_names, overused_words)
     ban_hint = ""
     if banned_words:
         ban_hint = f" Avoid words: {', '.join(banned_words)}."
@@ -537,7 +504,7 @@ async def llm_generate_text(theme_prompt: str, banned_words: List[str], banned_n
     if not match:
         raise ValueError(f"No JSON found in LLM response: {text[:200]}")
     data = json.loads(match.group(0))
-    data["tags"] = finalize_tags(data.get("tags") or [], category)
+    data["tags"] = finalize_tags(data.get("tags") or [], category, banned_words)
     return data
 
 
@@ -624,26 +591,21 @@ async def _generate_capsule(settings: dict) -> Capsule:
         category=category,
         overused_words=overused,
     )
-    capsule_name = text_data.get("capsule_name", "Unnamed Capsule")
+    capsule_name = (text_data.get("capsule_name") or "Unnamed Capsule").strip()
     front_concept = text_data.get("front_concept", "")
     back_concept = text_data.get("back_concept", "")
+    back_summary = text_data.get("back_summary") or back_concept
     front_b64, back_b64 = await asyncio.gather(
         llm_generate_image(build_front_prompt(front_concept)),
         llm_generate_image(build_back_prompt(back_concept)),
     )
-    description = DESCRIPTION_TEMPLATE.format(
-        capsule_name=capsule_name.upper(),
-        back_graphic=back_concept.rstrip(".").lower(),
-    )
-    fallback_hint = THEME_HINT_OVERRIDES.get(theme.get("key") or "", default_theme_hint(category))
     return Capsule(
         capsule_name=capsule_name,
-        title=text_data.get("title") or random.choice(title_formulas_for(category)).format(
-            capsule_name=capsule_name, theme_hint=fallback_hint
-        ),
-        description=description,
+        title=build_title(capsule_name, theme_secondary(theme.get("key"), category), category),
+        description=build_description(capsule_name, back_summary),
         front_concept=front_concept,
         back_concept=back_concept,
+        back_summary=back_summary,
         tags=text_data.get("tags") or [],
         front_image_b64=front_b64,
         back_image_b64=back_b64,
@@ -812,11 +774,20 @@ async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = N
     update: Dict = {"status": "approved", "approved_at": now_iso()}
     if payload:
         if payload.title is not None:
-            update["title"] = payload.title
+            update["title"] = payload.title.strip()[:seo.ETSY_TITLE_MAX]
         if payload.tags is not None:
             update["tags"] = filter_etsy_tags(payload.tags)[:MAX_TAGS]
-        if payload.capsule_name is not None:
-            update["capsule_name"] = payload.capsule_name
+        if payload.capsule_name is not None and payload.capsule_name.strip():
+            update["capsule_name"] = payload.capsule_name.strip()
+            existing = await capsules_coll.find_one(
+                {"id": capsule_id}, {"_id": 0, "back_summary": 1, "back_concept": 1, "theme_seed": 1, "title": 1, "tags": 1}
+            ) or {}
+            # Keep the description (and title, unless the user typed one) in sync with a renamed design
+            update["description"] = build_description(
+                update["capsule_name"], existing.get("back_summary") or existing.get("back_concept") or ""
+            )
+            if payload.title is None:
+                update["title"] = build_title(update["capsule_name"], None, capsule_category(existing))
     result = await capsules_coll.update_one({"id": capsule_id}, {"$set": update})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Capsule not found")
@@ -857,25 +828,29 @@ async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = N
                 await _set_etsy_photos_status(capsule_id, "skipped", "Capsule is missing front or back image")
             else:
                 try:
-                    seo = await generate_seo(
+                    seo_data = await generate_seo(
                         full.get("capsule_name") or "",
                         full.get("back_concept") or "",
                         overused_words=await recent_seo_overused_words(exclude_id=capsule_id),
+                        category=capsule_category(full),
                     )
-                    if seo:
-                        new_title = seo.get("title", "")[:140]
-                        new_tags = filter_etsy_tags(seo.get("tags", []))[:MAX_TAGS]
-                        new_desc = DESCRIPTION_TEMPLATE.format(
-                            capsule_name=(full.get("capsule_name") or "").upper(),
-                            back_graphic=(full.get("back_concept") or "").rstrip(".").lower(),
+                    if seo_data:
+                        new_title = seo_data.get("title", "")[:seo.ETSY_TITLE_MAX]
+                        new_tags = filter_etsy_tags(seo_data.get("tags", []))[:MAX_TAGS]
+                        new_desc = build_description(
+                            full.get("capsule_name") or "",
+                            full.get("back_summary") or full.get("back_concept") or "",
                         )
                         await update_product(shop_id, pid, {
                             "title": new_title,
                             "tags": new_tags,
                             "description": new_desc,
                         })
-                        # The live listing title; feeds the next overused-word check
-                        await capsules_coll.update_one({"id": capsule_id}, {"$set": {"seo_title": new_title}})
+                        # The live listing text; seo_title feeds the next overused-word check
+                        await capsules_coll.update_one(
+                            {"id": capsule_id},
+                            {"$set": {"seo_title": new_title, "seo_tags": new_tags, "seo_description": new_desc}},
+                        )
                     await prioritize_back_mockup(shop_id, pid)
                     await publish_product(shop_id, pid)
                     logger.info(f"Published capsule {capsule_id} (Printify product {pid}) live to Etsy")
@@ -1014,7 +989,7 @@ async def regenerate_image(request: Request, capsule_id: str, side: str, _: None
 
 
 @api_router.get("/capsules/approved", response_model=List[CapsulePublic])
-async def list_approved():
+async def list_approved(_: None = Depends(require_admin_key)):
     docs = await capsules_coll.find(
         {"status": "approved"},
         {"_id": 0, "front_image_b64": 0, "back_image_b64": 0},
@@ -1046,7 +1021,7 @@ async def get_capsule_image(capsule_id: str, side: str):
 
 
 @api_router.get("/capsules/export.csv")
-async def export_csv(request: Request):
+async def export_csv(request: Request, _: None = Depends(require_admin_key)):
     docs = await capsules_coll.find(
         {"status": "approved"},
         {"_id": 0, "front_image_b64": 0, "back_image_b64": 0},
@@ -1065,7 +1040,7 @@ async def export_csv(request: Request):
             d.get("capsule_name", ""),
             d.get("title", ""),
             d.get("description", ""),
-            " | ".join(d.get("tags") or []),
+            ", ".join(d.get("tags") or []),  # Etsy bulk tools expect comma-separated tags
             d.get("front_concept", ""),
             d.get("back_concept", ""),
             d.get("theme_seed", "") or "",
@@ -1085,7 +1060,11 @@ async def export_csv(request: Request):
 # Settings endpoints
 # -----------------------------
 @api_router.get("/settings")
-async def get_settings_endpoint():
+async def get_settings_endpoint(_: None = Depends(require_admin_key)):
+    return await _settings_payload()
+
+
+async def _settings_payload() -> dict:
     s = await get_settings()
     return {
         "active_theme": s.get("active_theme", "auto"),
@@ -1133,7 +1112,7 @@ async def update_settings(payload: SettingsUpdate, _: None = Depends(require_adm
     if flush_queue:
         deleted = await capsules_coll.delete_many({"status": "draft", "consumed": False})
         logger.info(f"Flushed {deleted.deleted_count} pre-warmed drafts on settings update")
-    return await get_settings_endpoint()
+    return await _settings_payload()
 
 
 # -----------------------------

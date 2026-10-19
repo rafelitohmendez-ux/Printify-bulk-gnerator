@@ -174,6 +174,23 @@ async def publish_product(shop_id: int, product_id: str) -> None:
         )
 
 
+async def publish_product_text(shop_id: int, product_id: str) -> None:
+    """Re-sync only title, description and tags of an already-published product to Etsy.
+
+    Images, variants and shipping are left alone, so photos arranged on Etsy (lifestyle
+    photo, size chart, back mockup first) are not overwritten.
+    """
+    async with _client() as c:
+        await _check(
+            await c.post(
+                f"/shops/{shop_id}/products/{product_id}/publish.json",
+                json={"title": True, "description": True, "images": False,
+                      "variants": False, "tags": True, "keyFeatures": False,
+                      "shipping_template": False}
+            )
+        )
+
+
 def _pick_front_mockup(images: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """From a product's image list, pick the front-view mockup that best
     showcases a small left-chest design. Prefer 'close'/'detail'/'chest' URLs."""
