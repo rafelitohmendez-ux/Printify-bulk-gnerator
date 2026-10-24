@@ -3,7 +3,8 @@
 Flow (triggered after auto-push publishes a capsule, or via the retry endpoint):
   1. Poll Printify until the product has an external Etsy listing ID (Printify
      publishes to Etsy asynchronously, so the listing doesn't exist right away).
-  2. Generate a high-contrast lifestyle photo with Gemini (generate_mockups.py).
+  2. Only if settings.etsy_lifestyle_photos is on (off by default, see Etsy's Oct 2026
+     image rules): generate a high-contrast lifestyle photo with Gemini (generate_mockups.py).
   3. Arrange the listing per the 4-photo checklist:
        1. back-print mockup (primary thumbnail; found among the listing's images by
           perceptual hash vs Printify's back mockup)
@@ -60,6 +61,11 @@ MOCKUP_HASH_SIZE = 16
 MOCKUP_HASH_CROP = (0.25, 0.2, 0.75, 0.75)  # left, top, right, bottom as fractions
 BACK_MATCH_MAX_DISTANCE = 40
 BACK_MATCH_MIN_MARGIN = 16
+
+# Rank-1 check for old listings: 64-bit whole-image dHash distance to a Printify mockup at or
+# under this means "it's a mockup"; generated scene photos are ~20+ away.
+GENERATED_PHOTO_MIN_DISTANCE = 11
+MAX_MOCKUPS_COMPARED = 12
 
 # 4-photo checklist: back print primary (1), front close-up (2), size chart (3), lifestyle (4)
 BACK_MOCKUP_RANK = 1
@@ -418,6 +424,36 @@ async def upload_lifestyle_photo(
 upload_primary_photo = upload_lifestyle_photo
 
 
+async def generated_first_image_id(auth: "EtsyAuth", listing_id: str, product: Dict[str, Any]) -> Tuple[Optional[int], str]:
+    """(listing_image_id, note): the rank-1 image's ID if it is a generated photo rather than a
+    Printify mockup (old listings got an atmospheric photo at rank 1), else (None, note)."""
+    resp = await auth.request("GET", f"/listings/{listing_id}/images")
+    if resp.status_code >= 400:
+        return None, f"Etsy GET images HTTP {resp.status_code}"
+    images = sorted(resp.json().get("results") or [], key=lambda i: int(i.get("rank") or 999))
+    if not images:
+        return None, "listing has no images"
+    url = images[0].get("url_570xN") or images[0].get("url_fullxfull")
+    product_images = (product or {}).get("images") or []
+    chosen = [i for i in product_images if i.get("is_selected_for_publishing")] or product_images
+    srcs = [i["src"] for i in chosen if i.get("src")][:MAX_MOCKUPS_COMPARED]
+    if not url or not srcs:
+        return None, "could not compare rank-1 image with Printify mockups"
+    first = dhash(await _download(url))
+    compared = 0
+    for src in srcs:
+        try:
+            d = _hamming(first, dhash(await _download(src)))
+        except Exception:
+            continue
+        compared += 1
+        if d < GENERATED_PHOTO_MIN_DISTANCE:
+            return None, "rank 1 is a Printify mockup"
+    if not compared:
+        return None, "could not load Printify mockups"
+    return images[0]["listing_image_id"], "rank 1 was a generated photo"
+
+
 async def log_listing_photo(log_coll, listing_id: str, product_id: Optional[str], source: str, note: str) -> None:
     await log_coll.update_one(
         {"listing_id": str(listing_id)},
@@ -491,6 +527,13 @@ async def run_etsy_photos(
                 "to Etsy (no external Etsy listing ID yet). Retry with POST /api/capsules/{id}/etsy-photos.",
             )
         listing_id = str(product["external"]["id"])
+
+        if not settings.get("etsy_lifestyle_photos"):
+            # Default: no AI photo. Just put the back-print mockup first.
+            note = await arrange_listing_photos(auth, listing_id, back_mockup_src(product), [])
+            note = f"AI lifestyle photo off; {note}"
+            logger.info(f"Arranged Etsy listing {listing_id} for capsule {capsule_id} ({pid}); {note}")
+            return await _record(capsules_coll, capsule_id, "success", None, etsy_listing_id=listing_id, etsy_photos_note=note)
 
         image_bytes = await _generate_photo(capsule)
         if not image_bytes:

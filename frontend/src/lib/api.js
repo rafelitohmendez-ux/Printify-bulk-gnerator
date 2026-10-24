@@ -41,6 +41,11 @@ export const imageUrl = (id, side, bust) =>
 export const pushToPrintify = (id) =>
   api.post(`/capsules/${id}/push-printify`).then((r) => r.data);
 
+// Catalog fix: rewrite SEO + AI disclosure on live listings, fix photo order
+export const startCatalogFix = (limit) =>
+  api.post("/catalog/fix", { limit: limit || null }).then((r) => r.data);
+export const catalogFixStatus = () => api.get("/catalog/fix").then((r) => r.data);
+
 // Settings
 export const getSettings = () => api.get("/settings").then((r) => r.data);
 export const updateSettings = (payload) => api.put("/settings", payload).then((r) => r.data);
