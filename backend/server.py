@@ -53,6 +53,7 @@ from seo import build_description, build_title, filter_etsy_tags
 from title_words import RECENT_TITLES_WINDOW, find_overused_words, overused_words_instruction
 from title_words import words as title_word_list
 import etsy_photos
+import catalog_fix
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -292,6 +293,9 @@ class SettingsDoc(BaseModel):
     printify_shop_id: Optional[int] = None
     printify_print_provider_id: Optional[int] = None
     printify_auto_push: bool = False
+    # AI-generated lifestyle photo on Etsy listings. Off by default: Etsy's Oct 2026 image
+    # rules make buyers' "looks different from the photos" claims the seller's problem.
+    etsy_lifestyle_photos: bool = False
     # Fraction of auto-mode generations biased toward NICHE_THEME_KEYS vs. the broader pool
     niche_weight: float = 0.7
     # Anti-repetition state (internal, not user-configurable)
@@ -306,7 +310,12 @@ class SettingsUpdate(BaseModel):
     printify_shop_id: Optional[int] = None
     printify_print_provider_id: Optional[int] = None
     printify_auto_push: Optional[bool] = None
+    etsy_lifestyle_photos: Optional[bool] = None
     niche_weight: Optional[float] = None
+
+
+class CatalogFixRequest(BaseModel):
+    limit: Optional[int] = None  # None = every product; 1 = test on the newest product
 
 
 class ApprovePayload(BaseModel):
@@ -840,6 +849,7 @@ async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = N
                         new_desc = build_description(
                             full.get("capsule_name") or "",
                             full.get("back_summary") or full.get("back_concept") or "",
+                            ai_scene_photo=bool(settings.get("etsy_lifestyle_photos")),
                         )
                         await update_product(shop_id, pid, {
                             "title": new_title,
@@ -1075,6 +1085,7 @@ async def _settings_payload() -> dict:
         "printify_shop_id": s.get("printify_shop_id"),
         "printify_print_provider_id": s.get("printify_print_provider_id"),
         "printify_auto_push": bool(s.get("printify_auto_push")),
+        "etsy_lifestyle_photos": bool(s.get("etsy_lifestyle_photos")),
         "printify_token_configured": bool(os.environ.get("PRINTIFY_API_TOKEN")),
         "niche_weight": s.get("niche_weight") if s.get("niche_weight") is not None else 0.7,
         "niche_theme_keys": sorted(NICHE_THEME_KEYS),
@@ -1107,12 +1118,39 @@ async def update_settings(payload: SettingsUpdate, _: None = Depends(require_adm
         )
     if payload.printify_auto_push is not None:
         update["printify_auto_push"] = bool(payload.printify_auto_push)
+    if payload.etsy_lifestyle_photos is not None:
+        update["etsy_lifestyle_photos"] = bool(payload.etsy_lifestyle_photos)
     if update:
         await settings_coll.update_one({"id": "config"}, {"$set": update}, upsert=True)
     if flush_queue:
         deleted = await capsules_coll.delete_many({"status": "draft", "consumed": False})
         logger.info(f"Flushed {deleted.deleted_count} pre-warmed drafts on settings update")
     return await _settings_payload()
+
+
+# -----------------------------
+# Catalog fix (rewrite SEO + disclosure on live listings, fix photo order)
+# -----------------------------
+_catalog_fix_task: Optional[asyncio.Task] = None
+
+
+@api_router.post("/catalog/fix", status_code=202)
+async def start_catalog_fix(payload: Optional[CatalogFixRequest] = None, _: None = Depends(require_admin_key)):
+    """Start the catalog fix in the background. limit=1 tests on the newest product."""
+    global _catalog_fix_task
+    if _catalog_fix_task and not _catalog_fix_task.done():
+        raise HTTPException(status_code=409, detail="Catalog fix is already running")
+    limit = payload.limit if payload and payload.limit and payload.limit > 0 else None
+    _catalog_fix_task = asyncio.create_task(catalog_fix.run_catalog_fix(settings_coll, capsules_coll, limit))
+    return {"ok": True, "state": "running", "limit": limit}
+
+
+@api_router.get("/catalog/fix")
+async def catalog_fix_status(_: None = Depends(require_admin_key)):
+    status = await catalog_fix.get_status(settings_coll)
+    if status.get("state") == "running" and not (_catalog_fix_task and not _catalog_fix_task.done()):
+        status["state"] = "interrupted"  # server restarted mid-run; safe to start again
+    return status
 
 
 # -----------------------------
@@ -1225,4 +1263,6 @@ async def on_shutdown():
         _cleanup_task.cancel()
     for task in list(_etsy_photo_tasks.values()):
         task.cancel()
+    if _catalog_fix_task:
+        _catalog_fix_task.cancel()
     client.close()

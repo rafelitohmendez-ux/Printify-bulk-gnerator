@@ -6,7 +6,10 @@ generates a high-contrast lifestyle photo with Gemini (using the Printify back p
 as the design reference), uploads it at rank 4 and puts the back-print mockup at
 rank 1 (the 4-photo checklist; same code path as the deployed app, etsy_photos.py).
 To fix listings that already have an old atmospheric photo at rank 1, run
-reorder_listing_photos.py instead.
+reorder_listing_photos.py instead (or the Catalog Fix button in the dashboard).
+
+AI photos are off by default since Etsy's Oct 2026 image rules: --apply also needs
+--allow-ai-photos, and listings that get one should describe it as an AI illustration.
 
 Safe to re-run: listings that already got a photo are skipped, based on
   - the etsy_photo_log Mongo collection (written by this script and the app)
@@ -423,7 +426,13 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=0,
                         help="Process in batches of N; stops if 2+ fail in a batch (default: one batch)")
     parser.add_argument("--batch-pause", type=float, default=60, help="Seconds between batches (default 60)")
-    return parser.parse_args(argv)
+    parser.add_argument("--allow-ai-photos", action="store_true",
+                        help="Required with --apply: confirms you want AI-generated photos on live listings")
+    args = parser.parse_args(argv)
+    if args.apply and not args.allow_ai_photos:
+        parser.error("--apply uploads AI-generated photos to live Etsy listings, which Etsy's Oct 2026 image "
+                     "rules make risky. Add --allow-ai-photos if you really want that.")
+    return args
 
 
 if __name__ == "__main__":

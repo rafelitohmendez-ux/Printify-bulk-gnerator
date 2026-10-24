@@ -108,7 +108,7 @@ def test_stop_reason():
 def test_cli_defaults_are_safe():
     args = bf.parse_args([])
     assert args.apply is False and args.limit == 5 and args.delay == 30 and not args.cyber_first
-    args = bf.parse_args(["--apply", "--limit", "2", "--cyber-first", "--delay", "45", "--listing-id", "99"])
+    args = bf.parse_args(["--apply", "--allow-ai-photos", "--limit", "2", "--cyber-first", "--delay", "45", "--listing-id", "99"])
     assert args.apply and args.limit == 2 and args.cyber_first and args.delay == 45 and args.listing_id == "99"
 
 
@@ -163,9 +163,9 @@ def test_dry_run_processes_nothing(harness, capsys):
 
 def test_apply_then_rerun_is_idempotent(harness, capsys):
     db, processed = harness
-    asyncio.run(bf.main(bf.parse_args(["--apply", "--limit", "2", "--cyber-first", "--delay", "0"])))
+    asyncio.run(bf.main(bf.parse_args(["--apply", "--allow-ai-photos", "--limit", "2", "--cyber-first", "--delay", "0"])))
     assert processed == [2, 1]
-    asyncio.run(bf.main(bf.parse_args(["--apply", "--limit", "5", "--delay", "0"])))
+    asyncio.run(bf.main(bf.parse_args(["--apply", "--allow-ai-photos", "--limit", "5", "--delay", "0"])))
     assert processed == [2, 1, 3]  # second run only picks up what's left
     out = capsys.readouterr().out
     assert "already has atmospheric photo (etsy_photo_log)" in out
@@ -180,7 +180,7 @@ def test_batches_stop_after_two_failures_in_a_batch(harness, monkeypatch, capsys
         raise RuntimeError("Gemini returned no image")
 
     monkeypatch.setattr(bf, "process_one", failing)
-    rc = asyncio.run(bf.main(bf.parse_args(["--apply", "--limit", "3", "--batch-size", "2", "--delay", "0"])))
+    rc = asyncio.run(bf.main(bf.parse_args(["--apply", "--allow-ai-photos", "--limit", "3", "--batch-size", "2", "--delay", "0"])))
     out = capsys.readouterr().out
     assert rc == 1 and processed == [1, 2]  # batch 2 never starts
     assert "STOPPED EARLY: 2 listings failed in batch 1" in out
@@ -195,6 +195,12 @@ def test_quota_error_stops_immediately(harness, monkeypatch, capsys):
         raise RuntimeError("Gemini returned no image: 429 RESOURCE_EXHAUSTED")
 
     monkeypatch.setattr(bf, "process_one", quota)
-    asyncio.run(bf.main(bf.parse_args(["--apply", "--limit", "3", "--delay", "0"])))
+    asyncio.run(bf.main(bf.parse_args(["--apply", "--allow-ai-photos", "--limit", "3", "--delay", "0"])))
     assert processed == [1]
     assert "STOPPED EARLY: Gemini quota exhausted" in capsys.readouterr().out
+
+
+def test_apply_requires_allow_ai_photos():
+    with pytest.raises(SystemExit):
+        bf.parse_args(["--apply"])
+    assert bf.parse_args(["--apply", "--allow-ai-photos"]).apply

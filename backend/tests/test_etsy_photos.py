@@ -203,7 +203,7 @@ def gemini(monkeypatch):
     return calls
 
 
-def seed_capsule(db, **overrides):
+def seed_capsule(db, lifestyle=True, **overrides):
     capsules, settings = db
     cap = server.Capsule(
         capsule_name="Glitch Saint", title="t", description="d", front_concept="f", back_concept="b",
@@ -211,7 +211,8 @@ def seed_capsule(db, **overrides):
     ).model_dump()
     cap.update({"printify_product_id": "pid-1", "printify_push_status": "success"}, **overrides)
     asyncio.run(capsules.insert_one(dict(cap)))
-    asyncio.run(settings.update_one({"id": "config"}, {"$set": {"printify_shop_id": 1}}, upsert=True))
+    asyncio.run(settings.update_one(
+        {"id": "config"}, {"$set": {"printify_shop_id": 1, "etsy_lifestyle_photos": lifestyle}}, upsert=True))
     return cap
 
 
@@ -423,6 +424,42 @@ def test_reorder_existing_listing_moves_old_photo_to_rank4(db, env, monkeypatch)
     note = asyncio.run(go())
     assert [fake.rank_of(i) for i in (3, 1, 2, ATMOSPHERIC_ID)] == [1, 2, 3, 4], note
     assert note == "back mockup (image 3) at rank 1; lifestyle photo at rank 4"
+
+
+def test_lifestyle_off_by_default_only_arranges_mockups(db, etsy, env, printify, gemini):
+    cap = seed_capsule(db, lifestyle=False)
+    run(db, cap["id"])
+    doc = stored(db, cap["id"])
+    assert doc["etsy_photos_status"] == "success"
+    assert gemini == [] and etsy.photo_uploads() == []  # no AI image generated or uploaded
+    assert etsy.rank_of(3) == 1  # back mockup still moved to the front
+    assert doc["etsy_photos_note"].startswith("AI lifestyle photo off; back mockup (image 3) at rank 1")
+
+
+def test_lifestyle_setting_defaults_off():
+    assert server.SettingsDoc().etsy_lifestyle_photos is False
+
+
+def test_generated_first_image_detected_vs_mockup(db, env, monkeypatch):
+    atmo_first = FakeEtsy(listing_images=[
+        {"listing_image_id": ATMOSPHERIC_ID, "rank": 1, "url_570xN": "https://i.etsystatic.test/atmo.jpg"},
+        {"listing_image_id": 3, "rank": 2, "url_570xN": "https://i.etsystatic.test/back.jpg"},
+    ])
+    product = {"images": [{"src": PRINTIFY_BACK_SRC, "position": "back"}]}
+
+    async def check(fake):
+        monkeypatch.setattr(etsy_photos, "_http_client", lambda timeout=60.0: httpx.AsyncClient(
+            transport=httpx.MockTransport(fake), timeout=timeout))
+        auth = etsy_photos.EtsyAuth(db[1])
+        await auth.load()
+        return await etsy_photos.generated_first_image_id(auth, LISTING_ID, product)
+
+    assert asyncio.run(check(atmo_first))[0] == ATMOSPHERIC_ID
+    back_first = FakeEtsy(listing_images=[
+        {"listing_image_id": 3, "rank": 1, "url_570xN": "https://i.etsystatic.test/back.jpg"},
+    ])
+    back_first.cdn["https://i.etsystatic.test/back.jpg"] = IMAGES["back"]
+    assert asyncio.run(check(back_first)) == (None, "rank 1 is a Printify mockup")
 
 
 def test_dhash_matches_resized_copy_not_other_images():

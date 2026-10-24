@@ -10,7 +10,8 @@ create_products_from_designs.py. Pure functions, no I/O.
    AI tags that read like image-prompt fragments ("Ash Cloud Graphic",
    "Bone Soot Design") are rejected and replaced from a buyer-phrase pool.
 3. Description: keyword hook in sentence one, fit / print / sizing bullets,
-   care instructions, favorite-the-shop CTA. No fabric weights, no "typography".
+   care instructions, AI-use disclosure (Etsy requires it), favorite-the-shop CTA.
+   No fabric weights, no "typography".
 """
 import random
 import re
@@ -173,12 +174,21 @@ CARE
 • Do not iron directly on the print
 • Do not dry clean
 
+ABOUT THE DESIGN
+Original MidnightRotation artwork, created with AI-assisted design tools, then selected, edited and finalized by hand. {photo_note}
+
 MADE TO ORDER
 Each shirt is printed after you order. Production and shipping times are shown at checkout.
 
 Favorite the MidnightRotation shop to catch new drops as they enter the rotation."""
 
 FALLBACK_BACK_SUBJECT = "monolithic gothic industrial imagery"
+
+PHOTO_NOTE_MOCKUPS = "Listing photos are product mockups of this exact print on a black Gildan 5000 tee."
+PHOTO_NOTE_WITH_AI_SCENE = (
+    "Listing photos are product mockups of this exact print on a black Gildan 5000 tee, except the "
+    "styled scene photo, which is an AI-generated illustration; use the mockups to judge print size and placement."
+)
 
 _LEADING_FILLER = re.compile(
     r"^(?:(?:an?|the)\s+)?(?:(?:large|oversized|detailed|huge|massive|monolithic|aggressive)[,\s]+)*"
@@ -206,10 +216,12 @@ def clean_back_subject(phrase: str, max_words: int = 18) -> str:
     return p
 
 
-def build_description(capsule_name: str, back_phrase: str) -> str:
+def build_description(capsule_name: str, back_phrase: str, ai_scene_photo: bool = False) -> str:
+    """ai_scene_photo: True when the listing also shows an AI-generated lifestyle/scene photo."""
     return DESCRIPTION_TEMPLATE.format(
         NAME=clean_name(capsule_name).upper(),
         back_subject=clean_back_subject(back_phrase),
+        photo_note=PHOTO_NOTE_WITH_AI_SCENE if ai_scene_photo else PHOTO_NOTE_MOCKUPS,
     )
 
 

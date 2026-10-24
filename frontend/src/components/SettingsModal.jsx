@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { X, Plus, FloppyDisk, Tag, Stack, Storefront } from "@phosphor-icons/react";
-import { getSettings, updateSettings, api } from "@/lib/api";
+import { X, Plus, FloppyDisk, Tag, Stack, Storefront, ShieldCheck } from "@phosphor-icons/react";
+import { getSettings, updateSettings, api, startCatalogFix, catalogFixStatus } from "@/lib/api";
 
 const SectionTitle = ({ icon, children }) => (
   <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.3em] text-zinc-500 font-body border-b border-zinc-800 pb-2 mb-3">
@@ -27,6 +27,9 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
   const [shopId, setShopId] = useState("");
   const [providerId, setProviderId] = useState("");
   const [autoPush, setAutoPush] = useState(false);
+  const [lifestylePhotos, setLifestylePhotos] = useState(false);
+  const [fix, setFix] = useState(null);
+  const [startingFix, setStartingFix] = useState(false);
   const [tokenConfigured, setTokenConfigured] = useState(false);
   const [loadingPrintify, setLoadingPrintify] = useState(false);
 
@@ -45,6 +48,7 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
           s.printify_print_provider_id ? String(s.printify_print_provider_id) : ""
         );
         setAutoPush(!!s.printify_auto_push);
+        setLifestylePhotos(!!s.etsy_lifestyle_photos);
         setTokenConfigured(!!s.printify_token_configured);
       })
       .catch((e) => toast.error("Failed to load settings", { description: e.message }))
@@ -69,6 +73,27 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
       })
       .finally(() => setLoadingPrintify(false));
   }, [open, tokenConfigured]);
+
+  // Poll catalog-fix status while the modal is open (fast while a run is in progress)
+  useEffect(() => {
+    if (!open) return undefined;
+    let cancelled = false;
+    let timer;
+    const poll = async () => {
+      try {
+        const st = await catalogFixStatus();
+        if (!cancelled) setFix(st);
+        timer = setTimeout(poll, st.state === "running" ? 4000 : 20000);
+      } catch {
+        timer = setTimeout(poll, 20000);
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [open]);
 
   if (!open) return null;
 
@@ -105,6 +130,20 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
     }
   };
 
+  const runFix = async (limit) => {
+    if (!limit && !window.confirm("Rewrite titles, tags, descriptions and photo order on ALL live listings?")) return;
+    setStartingFix(true);
+    try {
+      await startCatalogFix(limit);
+      setFix({ state: "running", done: 0, failed: 0, total: 0, log: [] });
+      toast.success(limit ? "Testing on the newest listing..." : "Catalog fix started");
+    } catch (e) {
+      toast.error("Could not start", { description: e?.response?.data?.detail || e.message });
+    } finally {
+      setStartingFix(false);
+    }
+  };
+
   const save = async () => {
     setSaving(true);
     try {
@@ -116,6 +155,7 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
         printify_shop_id: shopId ? parseInt(shopId, 10) : null,
         printify_print_provider_id: providerId ? parseInt(providerId, 10) : null,
         printify_auto_push: autoPush,
+        etsy_lifestyle_photos: lifestylePhotos,
       });
       toast.success("Settings saved // queue flushed");
       onSaved?.();
@@ -387,6 +427,74 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
                     // Pushed products land as drafts in your Printify store — review and
                     publish from there.
                   </p>
+                </div>
+              )}
+            </section>
+
+            {/* Etsy compliance */}
+            <section data-testid="etsy-compliance-section">
+              <SectionTitle icon={<ShieldCheck size={14} weight="bold" />}>
+                Etsy Listings
+              </SectionTitle>
+              <label
+                data-testid="lifestyle-photos-toggle"
+                className="flex items-center gap-3 cursor-pointer border border-zinc-800 px-3 py-2 hover:bg-zinc-900 transition-colors"
+              >
+                <input
+                  type="checkbox"
+                  checked={lifestylePhotos}
+                  onChange={(e) => setLifestylePhotos(e.target.checked)}
+                  className="accent-white w-4 h-4"
+                />
+                <span className="text-sm font-body text-zinc-200">
+                  Add an AI lifestyle photo to new listings
+                </span>
+              </label>
+              <p className="text-[10px] text-zinc-500 mt-2 mb-5">
+                // Off is safer under Etsy's Oct 2026 photo rules: buyers can claim the shirt looks
+                different from an AI photo. When on, the description labels it as an AI illustration.
+              </p>
+
+              <p className="text-[11px] text-zinc-400 mb-3">
+                Catalog fix: rewrites every live listing's title, tags and description (with the AI-use
+                disclosure) and moves old AI photos off the first slot. Test on one listing first and
+                check it on Etsy.
+              </p>
+              <div className="flex flex-wrap gap-2 mb-3">
+                <button
+                  data-testid="catalog-fix-test"
+                  onClick={() => runFix(1)}
+                  disabled={startingFix || fix?.state === "running"}
+                  className="border border-zinc-600 text-zinc-100 font-heading uppercase tracking-[0.2em] text-xs px-4 py-2 hover:bg-zinc-900 disabled:opacity-40"
+                >
+                  Test on 1 listing
+                </button>
+                <button
+                  data-testid="catalog-fix-all"
+                  onClick={() => runFix(null)}
+                  disabled={startingFix || fix?.state === "running"}
+                  className="bg-zinc-100 text-black font-heading uppercase tracking-[0.2em] text-xs px-4 py-2 hover:bg-white disabled:opacity-40"
+                >
+                  Fix all listings
+                </button>
+              </div>
+              {fix && fix.state && fix.state !== "idle" && (
+                <div data-testid="catalog-fix-status" className="bg-zinc-900 border border-zinc-800 p-3">
+                  <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-300">
+                    // {fix.state} · {fix.done || 0}/{fix.total || 0} done
+                    {fix.failed ? ` · ${fix.failed} failed` : ""}
+                  </p>
+                  {fix.error && <p className="text-[11px] text-red-400 mt-1">{fix.error}</p>}
+                  <div className="mt-2 max-h-40 overflow-y-auto space-y-1">
+                    {(fix.log || []).slice(-8).reverse().map((line, i) => (
+                      <p
+                        key={i}
+                        className={`text-[10px] break-words ${line.startsWith("FAILED") ? "text-red-400" : "text-zinc-500"}`}
+                      >
+                        {line}
+                      </p>
+                    ))}
+                  </div>
                 </div>
               )}
             </section>
