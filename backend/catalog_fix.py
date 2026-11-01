@@ -135,7 +135,9 @@ async def run_catalog_fix(settings_coll, capsules_coll, limit: Optional[int] = N
         }
         products = await _all_products(shop_id)
         if limit:
-            products = products[:limit]
+            # A test run should exercise a live listing: prefer products already on Etsy
+            live = [p for p in products if (p.get("external") or {}).get("id")]
+            products = (live or products)[:limit]
         status["total"] = len(products)
         await save()
 

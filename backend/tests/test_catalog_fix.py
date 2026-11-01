@@ -109,9 +109,15 @@ def test_fix_all(db, fakes):
     assert stored["state"] == "done" and any("text: skipped" in line for line in stored["log"])
 
 
-def test_limit_one_tests_newest_only(db, fakes):
+def test_limit_one_tests_newest_live_listing(db, fakes, monkeypatch):
+    draft_first = [dict(products()[2])] + products()[:2]  # newest product is a Printify-only draft
+
+    async def fake_list(shop_id, page=1, limit=50):
+        return {"data": draft_first if page == 1 else []}
+
+    monkeypatch.setattr(catalog_fix, "list_products", fake_list)
     status = asyncio.run(catalog_fix.run_catalog_fix(db.settings, db.capsules, limit=1))
-    assert status["total"] == 1 and [pid for pid, _ in fakes["update"]] == ["p1"]
+    assert status["total"] == 1 and [pid for pid, _ in fakes["update"]] == ["p1"]  # skipped the draft
 
 
 def test_uses_capsule_data_and_updates_capsule(db, fakes):
