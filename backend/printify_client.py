@@ -20,7 +20,10 @@ DEFAULT_VARIANT_PRICE_CENTS = 4499  # $44.99
 
 
 class PrintifyError(Exception):
-    pass
+    def __init__(self, message: str, status: Optional[int] = None, retry_after: Optional[float] = None):
+        super().__init__(message)
+        self.status = status
+        self.retry_after = retry_after
 
 
 def _get_token() -> str:
@@ -48,7 +51,15 @@ async def _check(resp: httpx.Response) -> Any:
             detail = resp.json()
         except Exception:
             detail = resp.text
-        raise PrintifyError(f"Printify {resp.request.method} {resp.request.url.path} -> {resp.status_code}: {detail}")
+        retry_after = None
+        try:
+            retry_after = float(resp.headers.get("retry-after")) if resp.headers.get("retry-after") else None
+        except ValueError:
+            pass
+        raise PrintifyError(
+            f"Printify {resp.request.method} {resp.request.url.path} -> {resp.status_code}: {detail}",
+            status=resp.status_code, retry_after=retry_after,
+        )
     if resp.status_code == 204 or not resp.content:
         return None
     return resp.json()

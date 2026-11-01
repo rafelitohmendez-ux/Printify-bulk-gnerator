@@ -316,7 +316,8 @@ class SettingsUpdate(BaseModel):
 
 
 class CatalogFixRequest(BaseModel):
-    limit: Optional[int] = None  # None = every product; 1 = test on the newest product
+    limit: Optional[int] = None  # None = every product; 1 = test on the newest live product
+    mode: str = "fix"  # fix | sync (re-send text to Etsy only) | retry (previous run's failures)
 
 
 class ApprovePayload(BaseModel):
@@ -1171,8 +1172,11 @@ async def start_catalog_fix(payload: Optional[CatalogFixRequest] = None, _: None
     if _catalog_fix_task and not _catalog_fix_task.done():
         raise HTTPException(status_code=409, detail="Catalog fix is already running")
     limit = payload.limit if payload and payload.limit and payload.limit > 0 else None
-    _catalog_fix_task = asyncio.create_task(catalog_fix.run_catalog_fix(settings_coll, capsules_coll, limit))
-    return {"ok": True, "state": "running", "limit": limit}
+    mode = (payload.mode if payload else "fix") or "fix"
+    if mode not in ("fix", "sync", "retry"):
+        raise HTTPException(status_code=400, detail="mode must be fix, sync or retry")
+    _catalog_fix_task = asyncio.create_task(catalog_fix.run_catalog_fix(settings_coll, capsules_coll, limit, mode))
+    return {"ok": True, "state": "running", "limit": limit, "mode": mode}
 
 
 @api_router.get("/catalog/fix")
