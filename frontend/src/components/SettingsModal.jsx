@@ -588,6 +588,9 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
                           className="block text-[11px] text-zinc-300 underline hover:text-white break-words"
                         >
                           {item.title || item.url}
+                          {item.reason && (
+                            <span className="block no-underline text-[10px] text-zinc-500">{item.reason}</span>
+                          )}
                         </a>
                       ))}
                     </div>
