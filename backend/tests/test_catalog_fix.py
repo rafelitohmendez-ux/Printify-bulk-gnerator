@@ -71,7 +71,7 @@ def fakes(monkeypatch):
     async def fake_first(auth, listing_id, product):
         return (99, "rank 1 was a generated photo") if listing_id == "L1" else (None, "rank 1 is a Printify mockup")
 
-    async def fake_arrange(auth, listing_id, back_src, ids):
+    async def fake_arrange(auth, listing_id, back_src, ids, **kw):
         calls["arrange"].append((listing_id, ids))
         return "arranged"
 
@@ -293,19 +293,100 @@ def test_price_mode_skips_products_already_at_price(db, fakes, monkeypatch):
 
 
 # ---------- photos mode ----------
-def test_photos_mode_lists_listings_needing_attention(db, fakes, monkeypatch):
-    async def arrange(auth, listing_id, back_src, ids):
+MOCKUP_IMAGES = [
+    {"src": "https://img/front.png", "position": "front", "variant_ids": [1], "is_selected_for_publishing": True},
+    {"src": "https://img/back.png", "position": "back", "variant_ids": [1], "is_selected_for_publishing": False},
+    {"src": "https://img/back-person.png", "position": "back", "variant_ids": [1], "is_selected_for_publishing": False},
+]
+
+
+def photo_products(desc_note=None):
+    out = []
+    for p in products():
+        p = dict(p)
+        p["images"] = [dict(i) for i in MOCKUP_IMAGES]
+        if desc_note:
+            p["description"] = "Intro. " + desc_note + " Outro."
+        out.append(p)
+    return out
+
+
+@pytest.fixture
+def photo_fakes(fakes, monkeypatch):
+    """L1 arranges fine; L2 has no back view on Etsy (only the old AI scene)."""
+    calls = {"fields": []}
+
+    async def arrange(auth, listing_id, back_src, ids, **kw):
         fakes["arrange"].append((listing_id, ids))
         if listing_id == "L2":
-            return "back mockup not moved: no clear match (best distance 60, runner-up 61); no lifestyle photo"
+            return "back mockup not moved: no comparable Etsy images; lifestyle photo at rank 1"
         return "back mockup (image 3) at rank 1; lifestyle photo at rank 4"
 
+    async def fields(shop_id, pid, text=False, variants=False, images=False):
+        calls["fields"].append((pid, text, variants, images))
+
     monkeypatch.setattr(etsy_photos, "arrange_listing_photos", arrange)
+    monkeypatch.setattr(catalog_fix, "publish_product_fields", fields)
+    return calls
+
+
+def test_photos_mode_restores_listings_without_back_view(db, fakes, photo_fakes, monkeypatch):
+    async def fake_list(shop_id, page=1, limit=50):
+        return {"data": photo_products(seo.PHOTO_NOTE_WITH_AI_SCENE) if page == 1 else []}
+
+    monkeypatch.setattr(catalog_fix, "list_products", fake_list)
     status = asyncio.run(catalog_fix.run_catalog_fix(db.settings, db.capsules, mode="photos"))
-    assert status["total"] == 2 and status["done"] == 2  # p3 isn't on Etsy
-    assert fakes["update"] == [] and fakes["seo"] == []  # no text changes
-    (item,) = status["needs_attention"]
-    assert item["id"] == "p2" and item["url"] == "https://www.etsy.com/listing/L2" and "no clear match" in item["reason"]
+    assert status["total"] == 2 and status["done"] == 2 and status["restored"] == 1
+    assert status["needs_attention"] == []
+    ((pid, body),) = fakes["update"]  # only the restored product is touched in Printify
+    assert pid == "p2"
+    imgs = {i["src"]: i for i in body["images"]}
+    assert imgs["https://img/back.png"]["is_default"] and imgs["https://img/back.png"]["is_selected_for_publishing"]
+    assert imgs["https://img/front.png"]["is_selected_for_publishing"]
+    assert sum(i["is_default"] for i in body["images"]) == 1
+    # the AI-scene note goes, since restoring replaces the Etsy photos
+    assert seo.PHOTO_NOTE_MOCKUPS in body["description"] and "AI-generated illustration" not in body["description"]
+    assert photo_fakes["fields"] == [("p2", True, False, True)]  # images + text, not prices
+    assert fakes["seo"] == [] and fakes["publish"] == []
+    assert any("mockups re-sent from Printify" in line for line in status["log"])
+
+
+def test_photos_restore_without_text_change(db, fakes, photo_fakes, monkeypatch):
+    async def fake_list(shop_id, page=1, limit=50):
+        return {"data": photo_products() if page == 1 else []}
+
+    monkeypatch.setattr(catalog_fix, "list_products", fake_list)
+    asyncio.run(catalog_fix.run_catalog_fix(db.settings, db.capsules, mode="photos"))
+    assert photo_fakes["fields"] == [("p2", False, False, True)]
+    assert set(fakes["update"][0][1]) == {"images"}
+
+
+def test_photos_test_run_stops_after_first_restore(db, fakes, photo_fakes, monkeypatch):
+    many = []
+    for n in range(5):
+        p = dict(photo_products()[1])  # every product is like L2 (needs a restore)
+        p["id"] = f"q{n}"
+        many.append(p)
+
+    async def fake_list(shop_id, page=1, limit=50):
+        return {"data": many if page == 1 else []}
+
+    monkeypatch.setattr(catalog_fix, "list_products", fake_list)
+    status = asyncio.run(catalog_fix.run_catalog_fix(db.settings, db.capsules, limit=1, mode="photos"))
+    assert status["restored"] == 1 and len(photo_fakes["fields"]) == 1 and status["done"] == 1
+    assert "stopped after the first restored listing" in status["log"][-1]
+
+
+def test_photos_restore_impossible_without_back_mockup(db, fakes, photo_fakes, monkeypatch):
+    async def fake_list(shop_id, page=1, limit=50):
+        p = dict(photo_products()[1])
+        p["images"] = [MOCKUP_IMAGES[0]]  # front only
+        return {"data": [p] if page == 1 else []}
+
+    monkeypatch.setattr(catalog_fix, "list_products", fake_list)
+    status = asyncio.run(catalog_fix.run_catalog_fix(db.settings, db.capsules, mode="photos"))
+    assert status["failed"] == 1 and status["failed_ids"] == [{"id": "p2", "stage": "photos"}]
+    assert "no back mockup" in status["log"][-1]
 
 
 def test_endpoint_rejects_unknown_mode(db, monkeypatch):

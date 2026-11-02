@@ -479,6 +479,43 @@ def test_several_back_views_still_moves_closest_to_rank1(db, env, printify, gemi
     assert fake.rank_of(1) != 1  # the blank front mockup is no longer first
 
 
+def test_relative_rule_tells_back_from_front_when_etsy_copies_differ(db, env, monkeypatch):
+    """Etsy's copies can sit far from Printify's (distance > 40); compared with BOTH Printify's
+    back and front mockups, the back view is still clearly the closer kind."""
+    hashes = {  # fake 'images' carry their hash directly
+        "https://images.printify.test/back.png": 0b0, "https://images.printify.test/front.png": (1 << 120) - 1,
+        "https://i.etsystatic.test/e-front.jpg": (1 << 118) - 1,  # ~2 from front, ~118 from back
+        "https://i.etsystatic.test/e-back.jpg": (1 << 55) - 1,    # 55 from back (> 40), 65 from front
+    }
+    images = [
+        {"listing_image_id": 1, "rank": 1, "url_570xN": "https://i.etsystatic.test/e-front.jpg"},
+        {"listing_image_id": 2, "rank": 2, "url_570xN": "https://i.etsystatic.test/e-back.jpg"},
+    ]
+    product = {"images": [
+        {"src": "https://images.printify.test/back.png", "position": "back"},
+        {"src": "https://images.printify.test/front.png", "position": "front"},
+    ]}
+    fake = FakeEtsy(listing_images=images)
+    monkeypatch.setattr(etsy_photos, "_http_client", lambda timeout=60.0: httpx.AsyncClient(
+        transport=httpx.MockTransport(fake), timeout=timeout))
+
+    async def fake_download(url):
+        return url.encode()
+
+    monkeypatch.setattr(etsy_photos, "_download", fake_download)
+    monkeypatch.setattr(etsy_photos, "mockup_hash", lambda b: hashes[b.decode()])
+
+    async def go(prod):
+        auth = etsy_photos.EtsyAuth(db[1])
+        await auth.load()
+        return await etsy_photos.arrange_listing_photos(
+            auth, LISTING_ID, "https://images.printify.test/back.png", [], product=prod)
+
+    assert "not moved" in asyncio.run(go(None))  # old absolute rule: 55 > 40, skipped
+    note = asyncio.run(go(product))
+    assert note.startswith("back mockup (image 2) at rank 1") and fake.rank_of(2) == 1
+
+
 def test_dhash_matches_resized_copy_not_other_images():
     back = etsy_photos.mockup_hash(IMAGES["back"])
     assert etsy_photos._hamming(back, etsy_photos.mockup_hash(IMAGES["back_small"])) <= etsy_photos.BACK_MATCH_MAX_DISTANCE

@@ -54,8 +54,12 @@ to Etsy. 2XL and up keep their extra Printify cost on top (rounded up to whole d
 no size is ever priced below Printify cost + $5. Etsy's own fees come out of that profit.
 
 ## Checking photos
-**Check photos** puts the back-print mockup first on every live listing and lists any listing
-where it couldn't identify the mockup. Fix those by dragging the back print to the first slot.
+**Check photos** puts the back-print mockup first on every live listing. Each Etsy photo is
+compared with Printify's back AND front mockups to tell back views from front views.
+If a listing has no back view on Etsy at all (old listings left with only an AI scene photo),
+Printify's mockups are re-sent with the back print as the main photo. That replaces the
+listing's photos (the old AI scene goes, and its note is removed from the description).
+**Test photo fix on 1** stops after the first such restore so you can check it on Etsy first.
 
 ## Fixing the existing catalog
 Easiest: dashboard → Settings → Etsy Listings → **Test on 1 listing**, check it on Etsy, then

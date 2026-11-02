@@ -61,6 +61,12 @@ MOCKUP_HASH_SIZE = 16
 MOCKUP_HASH_CROP = (0.25, 0.2, 0.75, 0.75)  # left, top, right, bottom as fractions
 BACK_MATCH_MAX_DISTANCE = 40
 BACK_MATCH_MIN_MARGIN = 16
+# Relative rule (used when Printify's front mockups are known): an Etsy image is a back view if
+# it is closer to some Printify back mockup than to any front mockup by RELATIVE_MARGIN, and
+# within RELATIVE_MAX_DISTANCE. Etsy re-encodes/crops images, so absolute distances run higher.
+RELATIVE_MAX_DISTANCE = 80
+RELATIVE_MARGIN = 10
+MAX_REFERENCE_MOCKUPS = 4
 
 # Rank-1 check for old listings: 64-bit whole-image dHash distance to a Printify mockup at or
 # under this means "it's a mockup"; generated scene photos are ~20+ away.
@@ -331,13 +337,32 @@ async def _download(url: str) -> bytes:
         return resp.content
 
 
+def _reference_srcs(product: Optional[Dict[str, Any]], position: str) -> List[str]:
+    images = [i for i in (product or {}).get("images") or [] if (i.get("position") or "").lower() == position]
+    images.sort(key=lambda i: (not i.get("is_selected_for_publishing"), not i.get("is_default")))
+    return [i["src"] for i in images if i.get("src")][:MAX_REFERENCE_MOCKUPS]
+
+
+async def _hashes(srcs: List[str]) -> List[int]:
+    out = []
+    for src in srcs:
+        try:
+            out.append(mockup_hash(await _download(src)))
+        except Exception:
+            continue
+    return out
+
+
 async def arrange_listing_photos(
-    auth: "EtsyAuth", listing_id: str, back_src: Optional[str], lifestyle_ids: List[int]
+    auth: "EtsyAuth", listing_id: str, back_src: Optional[str], lifestyle_ids: List[int],
+    product: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Put the back-print mockup at rank 1 and the lifestyle photo(s) at rank 4. Returns a note.
 
-    The back mockup is found by appearance (perceptual hash vs Printify's back mockup). If it
-    can't be identified with confidence, only the lifestyle photo is placed.
+    The back mockup is found by appearance (perceptual hash vs Printify's back mockup). With the
+    Printify product given, each Etsy image is compared with all of its back AND front mockups,
+    which tells back views from front views even when Etsy's copies differ a lot from Printify's.
+    If it can't be identified with confidence, only the lifestyle photo is placed.
     """
     resp = await auth.request("GET", f"/listings/{listing_id}/images")
     if resp.status_code >= 400:
@@ -365,8 +390,28 @@ async def arrange_listing_photos(
                 except Exception:
                     continue
             scored.sort(key=lambda s: s[0])
+            back_refs = await _hashes(_reference_srcs(product, "back")) if product else []
+            front_refs = await _hashes(_reference_srcs(product, "front")) if product else []
             if not scored:
                 why_not = "no comparable Etsy images"
+            elif back_refs and front_refs:
+                # Relative rule: closer to a back mockup than to any front mockup
+                candidates = []
+                for _, img in scored:
+                    url = img.get("url_570xN") or img.get("url_fullxfull")
+                    try:
+                        h = mockup_hash(await _download(url))
+                    except Exception:
+                        continue
+                    d_back = min(_hamming(h, r) for r in back_refs + [back_hash])
+                    d_front = min(_hamming(h, r) for r in front_refs)
+                    if d_back <= RELATIVE_MAX_DISTANCE and d_back + RELATIVE_MARGIN <= d_front:
+                        candidates.append((d_back, img))
+                if candidates:
+                    best = min(candidates, key=lambda c: c[0])[1]
+                else:
+                    why_not = (f"no clear match (best distance {scored[0][0]}, "
+                               f"runner-up {scored[1][0] if len(scored) > 1 else None}; no image looks like a back view)")
             else:
                 best_dist = scored[0][0]
                 runner_up = scored[1][0] if len(scored) > 1 else None
@@ -535,7 +580,7 @@ async def run_etsy_photos(
 
         if not settings.get("etsy_lifestyle_photos"):
             # Default: no AI photo. Just put the back-print mockup first.
-            note = await arrange_listing_photos(auth, listing_id, back_mockup_src(product), [])
+            note = await arrange_listing_photos(auth, listing_id, back_mockup_src(product), [], product=product)
             note = f"AI lifestyle photo off; {note}"
             logger.info(f"Arranged Etsy listing {listing_id} for capsule {capsule_id} ({pid}); {note}")
             return await _record(capsules_coll, capsule_id, "success", None, etsy_listing_id=listing_id, etsy_photos_note=note)
