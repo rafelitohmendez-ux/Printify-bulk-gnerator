@@ -462,6 +462,23 @@ def test_generated_first_image_detected_vs_mockup(db, env, monkeypatch):
     assert asyncio.run(check(back_first)) == (None, "rank 1 is a Printify mockup")
 
 
+def test_several_back_views_still_moves_closest_to_rank1(db, env, printify, gemini, monkeypatch):
+    """Listings with 2+ back views used to be skipped as 'no clear match'."""
+    fake = FakeEtsy(listing_images=[
+        {"listing_image_id": 1, "rank": 1, "url_570xN": "https://i.etsystatic.test/front.jpg"},
+        {"listing_image_id": 3, "rank": 2, "url_570xN": "https://i.etsystatic.test/back.jpg"},
+        {"listing_image_id": 4, "rank": 3, "url_570xN": "https://i.etsystatic.test/back2.jpg"},
+    ])
+    fake.cdn["https://i.etsystatic.test/back2.jpg"] = IMAGES["back_small"]  # a second, equally close back view
+    monkeypatch.setattr(etsy_photos, "_http_client", lambda timeout=60.0: httpx.AsyncClient(
+        transport=httpx.MockTransport(fake), timeout=timeout))
+    cap = seed_capsule(db, lifestyle=False)
+    run(db, cap["id"])
+    note = stored(db, cap["id"])["etsy_photos_note"]
+    assert "at rank 1" in note and "not moved" not in note
+    assert fake.rank_of(1) != 1  # the blank front mockup is no longer first
+
+
 def test_dhash_matches_resized_copy_not_other_images():
     back = etsy_photos.mockup_hash(IMAGES["back"])
     assert etsy_photos._hamming(back, etsy_photos.mockup_hash(IMAGES["back_small"])) <= etsy_photos.BACK_MATCH_MAX_DISTANCE

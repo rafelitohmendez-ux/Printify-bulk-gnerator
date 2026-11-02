@@ -370,8 +370,13 @@ async def arrange_listing_photos(
             else:
                 best_dist = scored[0][0]
                 runner_up = scored[1][0] if len(scored) > 1 else None
+                # A close runner-up is fine when it is ALSO within the back-match distance: listings
+                # often carry several back views (flat, folded, on a model) and any of them is a good
+                # first photo. The margin only matters when the runner-up is something else.
+                runner_up_is_back = runner_up is not None and runner_up <= BACK_MATCH_MAX_DISTANCE
                 if best_dist > BACK_MATCH_MAX_DISTANCE or (
-                        runner_up is not None and runner_up - best_dist < BACK_MATCH_MIN_MARGIN):
+                        runner_up is not None and not runner_up_is_back
+                        and runner_up - best_dist < BACK_MATCH_MIN_MARGIN):
                     why_not = f"no clear match (best distance {best_dist}, runner-up {runner_up})"
                 else:
                     best = scored[0][1]
