@@ -45,11 +45,14 @@ foreach ($p in $prices) {
     $dollars = [math]::Round($p / 100, 2)
     Write-Host "  price=$p  (USD $dollars)"
 }
-$badPrices = @($prices | Where-Object { $_ -ne 4499 })
-if ($badPrices.Count -eq 0) {
-    Write-Host "  PASS: all variants priced at 4499 (`$44.99)"
+$expected = if ($env:EXPECTED_BASE_PRICE_CENTS) { [int]$env:EXPECTED_BASE_PRICE_CENTS } else { $null }
+$minPrice = ($prices | Measure-Object -Minimum).Minimum
+if (-not $expected) {
+    Write-Host "  INFO: lowest price $minPrice (set `$env:EXPECTED_BASE_PRICE_CENTS to check it)"
+} elseif ($minPrice -eq $expected) {
+    Write-Host "  PASS: base price is $expected"
 } else {
-    Write-Host "  FAIL: unexpected prices found: $($badPrices -join ', ')"
+    Write-Host "  FAIL: base price is $minPrice, expected $expected"
 }
 
 # ── b) Image default / selected-for-publishing ────────────────────────────────

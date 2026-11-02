@@ -14,24 +14,33 @@ Modes:
   fix    - the full fix above (all products, or the newest live one with limit=1)
   sync   - only re-send each live product's current Printify text to Etsy (no Gemini, no photos)
   retry  - redo only the products that failed in the previous run
+  price  - set every product's price (S-XL = the base price; bigger sizes keep their extra
+           Printify cost on top) and re-send prices to Etsy
+  photos - re-run the photo arrangement on live listings and list the ones where the
+           back-print mockup could not be moved to the first slot
 
 Printify rate-limits publishing to Etsy (about 200 per 30 minutes), so publishes are paced
 and a 429 is waited out and retried.
 """
 import asyncio
 import logging
+import math
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import etsy_photos
 from bulk_seo_update import generate_seo
-from printify_client import PrintifyError, list_products, publish_product_text, update_product
+from printify_client import (
+    PrintifyError, list_products, publish_product_prices, publish_product_text, update_product,
+)
 from seo import build_description, extract_back_concept, extract_capsule_name, filter_etsy_tags, infer_category, MAX_TAGS
 
 logger = logging.getLogger("midnightrotation.catalog_fix")
 
+MODES = ("fix", "sync", "retry", "price", "photos")
 STATUS_DOC_ID = "catalog_fix"
+MIN_PROFIT_CENTS = 500  # never price a variant below its Printify cost + $5
 MAX_LOG_LINES = 60
 DELAY_SECONDS = 1.0
 PUBLISH_INTERVAL_SECONDS = 10.0   # ~180 publishes per 30 min, under Printify's ~200
@@ -47,15 +56,15 @@ class PublishFailed(Exception):
     """Printify text saved, but re-syncing it to Etsy failed (retry only needs the publish)."""
 
 
-async def publish_paced(shop_id: int, pid: str, on_wait=None) -> None:
-    """publish_product_text, spaced out and retried on Printify's 429 rate limit."""
+async def publish_paced(shop_id: int, pid: str, on_wait=None, prices: bool = False) -> None:
+    """Re-send text (or prices) to Etsy, spaced out and retried on Printify's 429 rate limit."""
     for attempt in range(1, PUBLISH_ATTEMPTS + 1):
         gap = PUBLISH_INTERVAL_SECONDS - (_clock() - _last_publish[0])
         if gap > 0:
             await _sleep(gap)
         _last_publish[0] = _clock()
         try:
-            await publish_product_text(shop_id, pid)
+            await (publish_product_prices if prices else publish_product_text)(shop_id, pid)
             return
         except PrintifyError as e:
             if e.status != 429 or attempt == PUBLISH_ATTEMPTS:
@@ -144,13 +153,89 @@ async def fix_one(
     return " | ".join(parts)
 
 
+def plan_prices(product: Dict[str, Any], base_cents: int) -> Optional[Dict[str, Any]]:
+    """New price per enabled variant: base for the cheapest size, plus the extra Printify cost
+    of bigger sizes (rounded up to whole dollars). Never below cost + MIN_PROFIT_CENTS.
+    Returns {"variants": [...], "min_price", "max_price", "min_profit", "max_profit"} or None."""
+    variants = product.get("variants") or []
+    enabled = [v for v in variants if v.get("is_enabled")]
+    if not enabled:
+        return None
+    costs = {v["id"]: int(v.get("cost") or 0) for v in enabled}
+    base_cost = min(costs.values())
+    out, prices, profits = [], [], []
+    for v in variants:
+        if not v.get("is_enabled"):
+            out.append({"id": v["id"], "price": v.get("price"), "is_enabled": False})
+            continue
+        cost = costs[v["id"]]
+        price = base_cents + int(math.ceil(max(0, cost - base_cost) / 100.0)) * 100
+        if cost and price < cost + MIN_PROFIT_CENTS:
+            price = int(math.ceil((cost + MIN_PROFIT_CENTS) / 100.0)) * 100 - 1
+        out.append({"id": v["id"], "price": price, "is_enabled": True})
+        prices.append(price)
+        if cost:
+            profits.append(price - cost)
+    return {
+        "variants": out, "min_price": min(prices), "max_price": max(prices),
+        "min_profit": min(profits) if profits else None, "max_profit": max(profits) if profits else None,
+    }
+
+
+def _usd(cents: Optional[int]) -> str:
+    return "?" if cents is None else f"${cents / 100:.2f}"
+
+
+async def reprice_one(product: Dict[str, Any], shop_id: int, base_cents: int, on_wait=None) -> str:
+    pid = str(product.get("id"))
+    plan = plan_prices(product, base_cents)
+    if not plan:
+        return "price: skipped (no enabled sizes)"
+    current = {v["id"]: v.get("price") for v in product.get("variants") or []}
+    if all(current.get(v["id"]) == v["price"] for v in plan["variants"]):
+        return f"price: already {_usd(plan['min_price'])}"
+    await update_product(shop_id, pid, {"variants": plan["variants"]})
+    if (product.get("external") or {}).get("id"):
+        await publish_paced(shop_id, pid, on_wait, prices=True)
+        where = "synced to Etsy"
+    else:
+        where = "Printify only"
+    rng = _usd(plan["min_price"]) if plan["min_price"] == plan["max_price"] else \
+        f"{_usd(plan['min_price'])}-{_usd(plan['max_price'])}"
+    profit = "" if plan["min_profit"] is None else \
+        f", profit before Etsy fees {_usd(plan['min_profit'])}-{_usd(plan['max_profit'])}"
+    return f"price: {rng}{profit} ({where})"
+
+
+def listing_url(listing_id: str) -> str:
+    return f"https://www.etsy.com/listing/{listing_id}"
+
+
+async def check_photos_one(product: Dict[str, Any], auth) -> Dict[str, Any]:
+    """Re-run the photo arrangement for one live listing. Returns {"note", "attention"}."""
+    listing_id = str((product.get("external") or {}).get("id"))
+    photo_id, why = await etsy_photos.generated_first_image_id(auth, listing_id, product)
+    note = await etsy_photos.arrange_listing_photos(
+        auth, listing_id, etsy_photos.back_mockup_src(product), [photo_id] if photo_id else []
+    )
+    attention = None
+    if "back mockup not moved" in note or "failed" in note:
+        attention = {
+            "id": str(product.get("id")), "title": (product.get("title") or "")[:90],
+            "url": listing_url(listing_id), "reason": note[:200],
+        }
+    return {"note": f"photos: {why}; {note}", "attention": attention}
+
+
 async def run_catalog_fix(
-    settings_coll, capsules_coll, limit: Optional[int] = None, mode: str = "fix"
+    settings_coll, capsules_coll, limit: Optional[int] = None, mode: str = "fix",
+    price_cents: Optional[int] = None,
 ) -> Dict[str, Any]:
     previous = await get_status(settings_coll)
     status: Dict[str, Any] = {
         "id": STATUS_DOC_ID, "state": "running", "mode": mode, "limit": limit, "started_at": _now(),
         "finished_at": None, "total": 0, "done": 0, "failed": 0, "failed_ids": [], "log": [], "error": None,
+        "needs_attention": [], "price_cents": price_cents if mode == "price" else None,
     }
 
     async def save():
@@ -170,7 +255,9 @@ async def run_catalog_fix(
 
         auth = None
         photo_listing_ids: set = set()
-        if mode != "sync":
+        if mode == "price" and not price_cents:
+            raise RuntimeError("No listing price set")
+        if mode not in ("sync", "price"):
             auth = etsy_photos.EtsyAuth(settings_coll)
             try:
                 await auth.load()
@@ -184,11 +271,14 @@ async def run_catalog_fix(
 
         products = await _all_products(shop_id)
         stages: Dict[str, str] = {}
-        if mode == "sync":
+        if mode in ("sync", "photos"):
             products = [p for p in products if (p.get("external") or {}).get("id")]
+        if mode == "photos" and not auth:
+            raise RuntimeError("Etsy is not configured (ETSY_API_KEY / ETSY_SHARED_SECRET on Render)")
         elif mode == "retry":
             stages = {f["id"]: f.get("stage", "fix") for f in previous.get("failed_ids") or []}
             products = [p for p in products if str(p.get("id")) in stages]
+            price_cents = previous.get("price_cents") or price_cents
         if limit:
             # A test run should exercise a live listing: prefer products already on Etsy
             live = [p for p in products if (p.get("external") or {}).get("id")]
@@ -200,26 +290,39 @@ async def run_catalog_fix(
             pid = str(product.get("id"))
             label = f"{(product.get('title') or '')[:60]} ({pid})"
             try:
-                if mode == "sync" or stages.get(pid) == "publish":
+                stage = stages.get(pid)
+                if mode == "sync" or stage == "publish":
                     await publish_paced(shop_id, pid, on_wait)
                     summary = "text synced to Etsy"
+                elif stage == "publish_prices":
+                    await publish_paced(shop_id, pid, on_wait, prices=True)
+                    summary = "prices synced to Etsy"
+                elif mode == "price" or stage == "price":
+                    summary = await reprice_one(product, shop_id, int(price_cents), on_wait)
+                elif (mode == "photos" or stage == "photos") and auth:
+                    result = await check_photos_one(product, auth)
+                    summary = result["note"]
+                    if result["attention"]:
+                        status["needs_attention"].append(result["attention"])
                 else:
                     summary = await fix_one(product, shop_id, auth, capsules_coll, photo_listing_ids, on_wait)
                 status["done"] += 1
                 status["log"].append(f"OK {label}: {summary}")
             except PublishFailed as e:
+                prices = mode == "price" or stages.get(pid) in ("price", "publish_prices")
                 status["failed"] += 1
-                status["failed_ids"].append({"id": pid, "stage": "publish"})
-                status["log"].append(f"FAILED {label}: text saved in Printify, Etsy sync failed: {e}")
+                status["failed_ids"].append({"id": pid, "stage": "publish_prices" if prices else "publish"})
+                what = "prices" if prices else "text"
+                status["log"].append(f"FAILED {label}: {what} saved in Printify, Etsy sync failed: {e}")
             except etsy_photos.EtsyAPIError as e:
                 status["failed"] += 1
-                status["failed_ids"].append({"id": pid, "stage": "fix"})
+                status["failed_ids"].append({"id": pid, "stage": stages.get(pid) or (mode if mode in ("price", "photos") else "fix")})
                 status["log"].append(f"FAILED {label}: {e}")
                 if e.status in (403, 429):
                     raise RuntimeError(f"Stopped: Etsy refused or rate limited ({e.status})")
             except Exception as e:
                 status["failed"] += 1
-                status["failed_ids"].append({"id": pid, "stage": "fix"})
+                status["failed_ids"].append({"id": pid, "stage": stages.get(pid) or (mode if mode in ("price", "photos") else "fix")})
                 status["log"].append(f"FAILED {label}: {type(e).__name__}: {str(e)[:300]}")
             await save()
             await _sleep(DELAY_SECONDS)

@@ -226,3 +226,99 @@ def test_publishes_are_spaced_out(db, fakes, monkeypatch):
     asyncio.run(catalog_fix.run_catalog_fix(db.settings, db.capsules, mode="sync"))
     # second publish waits so the two are PUBLISH_INTERVAL_SECONDS apart (minus the 1s product delay)
     assert catalog_fix.PUBLISH_INTERVAL_SECONDS - catalog_fix.DELAY_SECONDS in waits
+
+
+# ---------- price mode ----------
+def gildan_variants():
+    # S-XL cost $11.00, 2XL $13.20, 3XL $15.10; one disabled colour variant
+    return [
+        {"id": 1, "title": "Black / S", "cost": 1100, "price": 4499, "is_enabled": True},
+        {"id": 2, "title": "Black / XL", "cost": 1100, "price": 4499, "is_enabled": True},
+        {"id": 3, "title": "Black / 2XL", "cost": 1320, "price": 4499, "is_enabled": True},
+        {"id": 4, "title": "Black / 3XL", "cost": 1510, "price": 4499, "is_enabled": True},
+        {"id": 5, "title": "White / S", "cost": 1100, "price": 4499, "is_enabled": False},
+    ]
+
+
+def test_plan_prices_keeps_size_upcharge_and_profit_floor():
+    plan = catalog_fix.plan_prices({"variants": gildan_variants()}, 2999)
+    prices = {v["id"]: v["price"] for v in plan["variants"]}
+    assert prices == {1: 2999, 2: 2999, 3: 3299, 4: 3499, 5: 4499}  # +$2.20 -> +$3, +$4.10 -> +$5
+    assert [v["is_enabled"] for v in plan["variants"]] == [True, True, True, True, False]
+    assert plan["min_profit"] == 1899 and plan["max_profit"] == 1989
+    # absurdly low base price: floor at cost + $5 (ending in .99)
+    low = {v["id"]: v["price"] for v in catalog_fix.plan_prices({"variants": gildan_variants()}, 1200)["variants"]}
+    assert low[1] == 1599 and low[4] == 2099
+
+
+def test_price_mode_updates_all_and_syncs_live_prices(db, fakes, monkeypatch):
+    def with_variants():
+        out = []
+        for p in products():
+            p = dict(p)
+            p["variants"] = gildan_variants()
+            out.append(p)
+        return out
+
+    async def fake_list(shop_id, page=1, limit=50):
+        return {"data": with_variants() if page == 1 else []}
+
+    price_pubs = []
+
+    async def fake_price_pub(shop_id, pid):
+        price_pubs.append(pid)
+
+    monkeypatch.setattr(catalog_fix, "list_products", fake_list)
+    monkeypatch.setattr(catalog_fix, "publish_product_prices", fake_price_pub)
+    status = asyncio.run(catalog_fix.run_catalog_fix(db.settings, db.capsules, mode="price", price_cents=2999))
+    assert status["state"] == "done" and status["done"] == 3 and status["price_cents"] == 2999
+    assert [pid for pid, _ in fakes["update"]] == ["p1", "p2", "p3"]
+    assert all(set(body) == {"variants"} for _, body in fakes["update"])  # text untouched
+    assert price_pubs == ["p1", "p2"] and fakes["publish"] == []  # only live ones; text not re-sent
+    assert fakes["seo"] == [] and fakes["arrange"] == []
+    assert any("$29.99-$34.99" in line and "synced to Etsy" in line for line in status["log"])
+
+
+def test_price_mode_skips_products_already_at_price(db, fakes, monkeypatch):
+    already = catalog_fix.plan_prices({"variants": gildan_variants()}, 2999)["variants"]
+
+    async def fake_list(shop_id, page=1, limit=50):
+        p = dict(products()[0])
+        p["variants"] = [dict(v, cost=g["cost"]) for v, g in zip(already, gildan_variants())]
+        return {"data": [p] if page == 1 else []}
+
+    monkeypatch.setattr(catalog_fix, "list_products", fake_list)
+    status = asyncio.run(catalog_fix.run_catalog_fix(db.settings, db.capsules, mode="price", price_cents=2999))
+    assert fakes["update"] == [] and "price: already $29.99" in status["log"][-1]
+
+
+# ---------- photos mode ----------
+def test_photos_mode_lists_listings_needing_attention(db, fakes, monkeypatch):
+    async def arrange(auth, listing_id, back_src, ids):
+        fakes["arrange"].append((listing_id, ids))
+        if listing_id == "L2":
+            return "back mockup not moved: no clear match (best distance 60, runner-up 61); no lifestyle photo"
+        return "back mockup (image 3) at rank 1; lifestyle photo at rank 4"
+
+    monkeypatch.setattr(etsy_photos, "arrange_listing_photos", arrange)
+    status = asyncio.run(catalog_fix.run_catalog_fix(db.settings, db.capsules, mode="photos"))
+    assert status["total"] == 2 and status["done"] == 2  # p3 isn't on Etsy
+    assert fakes["update"] == [] and fakes["seo"] == []  # no text changes
+    (item,) = status["needs_attention"]
+    assert item["id"] == "p2" and item["url"] == "https://www.etsy.com/listing/L2" and "no clear match" in item["reason"]
+
+
+def test_endpoint_rejects_unknown_mode(db, monkeypatch):
+    monkeypatch.setattr(server, "settings_coll", db.settings)
+    with pytest.raises(server.HTTPException):
+        asyncio.run(server.start_catalog_fix(server.CatalogFixRequest(mode="nuke"), None))
+
+
+def test_price_setting_validated_and_exposed(db, monkeypatch):
+    monkeypatch.setattr(server, "settings_coll", db.settings)
+    monkeypatch.setattr(server, "capsules_coll", db.capsules)
+    out = asyncio.run(server.update_settings(server.SettingsUpdate(listing_price_cents=2999), None))
+    assert out["listing_price_cents"] == 2999
+    with pytest.raises(server.HTTPException):
+        asyncio.run(server.update_settings(server.SettingsUpdate(listing_price_cents=500), None))
+    assert server.listing_price({}) == 4499

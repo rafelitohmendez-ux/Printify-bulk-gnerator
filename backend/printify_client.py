@@ -185,21 +185,31 @@ async def publish_product(shop_id: int, product_id: str) -> None:
         )
 
 
-async def publish_product_text(shop_id: int, product_id: str) -> None:
-    """Re-sync only title, description and tags of an already-published product to Etsy.
+async def publish_product_fields(shop_id: int, product_id: str, text: bool = False, variants: bool = False) -> None:
+    """Re-sync selected fields of an already-published product to Etsy.
 
-    Images, variants and shipping are left alone, so photos arranged on Etsy (lifestyle
-    photo, size chart, back mockup first) are not overwritten.
+    text = title, description and tags; variants = prices. Images are never re-sent, so
+    photos arranged on Etsy (size chart, back mockup first) are not overwritten.
     """
     async with _client() as c:
         await _check(
             await c.post(
                 f"/shops/{shop_id}/products/{product_id}/publish.json",
-                json={"title": True, "description": True, "images": False,
-                      "variants": False, "tags": True, "keyFeatures": False,
+                json={"title": text, "description": text, "images": False,
+                      "variants": variants, "tags": text, "keyFeatures": False,
                       "shipping_template": False}
             )
         )
+
+
+async def publish_product_text(shop_id: int, product_id: str) -> None:
+    """Re-sync only title, description and tags to Etsy (images, prices, shipping untouched)."""
+    await publish_product_fields(shop_id, product_id, text=True)
+
+
+async def publish_product_prices(shop_id: int, product_id: str) -> None:
+    """Re-sync only variant prices to Etsy (text, images, shipping untouched)."""
+    await publish_product_fields(shop_id, product_id, variants=True)
 
 
 def _pick_front_mockup(images: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -308,6 +318,7 @@ async def push_capsule_as_draft(
     shop_id: int,
     print_provider_id: int,
     capsule: Dict[str, Any],
+    price_cents: int = DEFAULT_VARIANT_PRICE_CENTS,
 ) -> Dict[str, Any]:
     """Upload both images and create a draft product on Printify.
 
@@ -344,7 +355,7 @@ async def push_capsule_as_draft(
     # 3. Construct product payload: back placement always, front (left-chest)
     # placement only if a front image was supplied.
     variants_array = [
-        {"id": vid, "price": DEFAULT_VARIANT_PRICE_CENTS, "is_enabled": True}
+        {"id": vid, "price": int(price_cents), "is_enabled": True}
         for vid in variant_ids
     ]
     placeholders = [

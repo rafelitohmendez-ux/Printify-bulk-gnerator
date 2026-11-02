@@ -28,6 +28,7 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
   const [providerId, setProviderId] = useState("");
   const [autoPush, setAutoPush] = useState(false);
   const [lifestylePhotos, setLifestylePhotos] = useState(false);
+  const [price, setPrice] = useState("44.99");
   const [fix, setFix] = useState(null);
   const [startingFix, setStartingFix] = useState(false);
   const [tokenConfigured, setTokenConfigured] = useState(false);
@@ -49,6 +50,7 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
         );
         setAutoPush(!!s.printify_auto_push);
         setLifestylePhotos(!!s.etsy_lifestyle_photos);
+        setPrice(((s.listing_price_cents || 4499) / 100).toFixed(2));
         setTokenConfigured(!!s.printify_token_configured);
       })
       .catch((e) => toast.error("Failed to load settings", { description: e.message }))
@@ -130,6 +132,24 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
     }
   };
 
+  const priceCents = () => Math.round(parseFloat(price) * 100);
+  const priceValid = () => Number.isFinite(priceCents()) && priceCents() >= 1500 && priceCents() <= 15000;
+
+  const applyPrice = async () => {
+    if (!priceValid()) {
+      toast.error("Price must be between $15 and $150");
+      return;
+    }
+    if (!window.confirm(`Set every listing to $${(priceCents() / 100).toFixed(2)} (bigger sizes keep their extra cost on top)?`)) return;
+    try {
+      await updateSettings({ listing_price_cents: priceCents() });
+    } catch (e) {
+      toast.error("Could not save price", { description: e?.response?.data?.detail || e.message });
+      return;
+    }
+    runFix(null, "price");
+  };
+
   const runFix = async (limit, mode = "fix") => {
     if (mode === "fix" && !limit && !window.confirm("Rewrite titles, tags, descriptions and photo order on ALL live listings?")) return;
     setStartingFix(true);
@@ -139,6 +159,8 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
       toast.success(
         mode === "retry" ? "Retrying failed listings..."
           : mode === "sync" ? "Re-sending text to Etsy..."
+          : mode === "price" ? "Updating prices..."
+          : mode === "photos" ? "Checking photos..."
           : limit ? "Testing on the newest live listing..." : "Catalog fix started"
       );
     } catch (e) {
@@ -160,6 +182,7 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
         printify_print_provider_id: providerId ? parseInt(providerId, 10) : null,
         printify_auto_push: autoPush,
         etsy_lifestyle_photos: lifestylePhotos,
+        ...(priceValid() ? { listing_price_cents: priceCents() } : {}),
       });
       toast.success("Settings saved // queue flushed");
       onSaved?.();
@@ -459,6 +482,49 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
                 different from an AI photo. When on, the description labels it as an AI illustration.
               </p>
 
+              <label className="text-[10px] uppercase tracking-[0.25em] text-zinc-500 block mb-1">
+                Listing price (S–XL, USD)
+              </label>
+              <div className="flex flex-wrap items-center gap-2 mb-2">
+                <span className="text-zinc-400">$</span>
+                <input
+                  data-testid="listing-price-input"
+                  type="number"
+                  min="15"
+                  max="150"
+                  step="0.01"
+                  value={price}
+                  onChange={(e) => setPrice(e.target.value)}
+                  className="w-28 bg-zinc-900 border border-zinc-700 px-3 py-2 text-sm text-zinc-200 font-body focus:outline-none focus:border-white"
+                />
+                <button
+                  data-testid="apply-price-all"
+                  onClick={applyPrice}
+                  disabled={startingFix || fix?.state === "running"}
+                  className="border border-zinc-600 text-zinc-100 font-heading uppercase tracking-[0.2em] text-xs px-4 py-2 hover:bg-zinc-900 disabled:opacity-40"
+                >
+                  Apply price to all listings
+                </button>
+              </div>
+              <p className="text-[10px] text-zinc-500 mb-5">
+                // Used for new listings when you Save. 2XL and up add their extra Printify cost on top.
+                Never goes below Printify cost + $5.
+              </p>
+
+              <div className="flex flex-wrap items-center gap-2 mb-5">
+                <button
+                  data-testid="check-photos"
+                  onClick={() => runFix(null, "photos")}
+                  disabled={startingFix || fix?.state === "running"}
+                  className="border border-zinc-600 text-zinc-100 font-heading uppercase tracking-[0.2em] text-xs px-4 py-2 hover:bg-zinc-900 disabled:opacity-40"
+                >
+                  Check photos
+                </button>
+                <span className="text-[10px] text-zinc-500">
+                  // Puts the back print first on every live listing and lists any it couldn't fix.
+                </span>
+              </div>
+
               <p className="text-[11px] text-zinc-400 mb-3">
                 Catalog fix: rewrites every live listing's title, tags and description (with the AI-use
                 disclosure) and moves old AI photos off the first slot. Test on one listing first and
@@ -508,6 +574,24 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
                     {fix.failed ? ` · ${fix.failed} failed` : ""}
                   </p>
                   {fix.error && <p className="text-[11px] text-red-400 mt-1">{fix.error}</p>}
+                  {(fix.needs_attention || []).length > 0 && (
+                    <div data-testid="needs-attention" className="mt-2 border border-amber-900/50 p-2">
+                      <p className="text-[11px] text-amber-300 mb-1">
+                        Fix these by hand on Etsy (drag the back-print mockup to the first photo):
+                      </p>
+                      {fix.needs_attention.map((item) => (
+                        <a
+                          key={item.id}
+                          href={item.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="block text-[11px] text-zinc-300 underline hover:text-white break-words"
+                        >
+                          {item.title || item.url}
+                        </a>
+                      ))}
+                    </div>
+                  )}
                   <div className="mt-2 max-h-40 overflow-y-auto space-y-1">
                     {(fix.log || []).slice(-8).reverse().map((line, i) => (
                       <p

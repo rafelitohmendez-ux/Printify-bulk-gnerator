@@ -38,6 +38,7 @@ from google import genai
 from google.genai import types
 
 from printify_client import (
+    DEFAULT_VARIANT_PRICE_CENTS,
     GILDAN_5000_BLUEPRINT_ID,
     PrintifyError,
     list_print_providers,
@@ -297,6 +298,8 @@ class SettingsDoc(BaseModel):
     # AI-generated lifestyle photo on Etsy listings. Off by default: Etsy's Oct 2026 image
     # rules make buyers' "looks different from the photos" claims the seller's problem.
     etsy_lifestyle_photos: bool = False
+    # Base listing price (S-XL) for new products and the catalog "price" run, in cents
+    listing_price_cents: int = DEFAULT_VARIANT_PRICE_CENTS
     # Fraction of auto-mode generations biased toward NICHE_THEME_KEYS vs. the broader pool
     niche_weight: float = 0.7
     # Anti-repetition state (internal, not user-configurable)
@@ -312,12 +315,26 @@ class SettingsUpdate(BaseModel):
     printify_print_provider_id: Optional[int] = None
     printify_auto_push: Optional[bool] = None
     etsy_lifestyle_photos: Optional[bool] = None
+    listing_price_cents: Optional[int] = None
     niche_weight: Optional[float] = None
+
+
+MIN_PRICE_CENTS = 1500
+MAX_PRICE_CENTS = 15000
+
+
+def listing_price(settings: dict) -> int:
+    """Base (S-XL) listing price in cents."""
+    try:
+        cents = int(settings.get("listing_price_cents") or DEFAULT_VARIANT_PRICE_CENTS)
+    except (TypeError, ValueError):
+        cents = DEFAULT_VARIANT_PRICE_CENTS
+    return cents if MIN_PRICE_CENTS <= cents <= MAX_PRICE_CENTS else DEFAULT_VARIANT_PRICE_CENTS
 
 
 class CatalogFixRequest(BaseModel):
     limit: Optional[int] = None  # None = every product; 1 = test on the newest live product
-    mode: str = "fix"  # fix | sync (re-send text to Etsy only) | retry (previous run's failures)
+    mode: str = "fix"  # fix | sync (text to Etsy) | retry (previous failures) | price | photos
 
 
 class ApprovePayload(BaseModel):
@@ -846,6 +863,7 @@ async def approve_capsule(capsule_id: str, payload: Optional[ApprovePayload] = N
                 shop_id=shop_id,
                 print_provider_id=int(settings["printify_print_provider_id"]),
                 capsule=full,
+                price_cents=listing_price(settings),
             )
             pid = str(product.get("id") or "")
             await capsules_coll.update_one(
@@ -1117,6 +1135,7 @@ async def _settings_payload() -> dict:
         "printify_print_provider_id": s.get("printify_print_provider_id"),
         "printify_auto_push": bool(s.get("printify_auto_push")),
         "etsy_lifestyle_photos": bool(s.get("etsy_lifestyle_photos")),
+        "listing_price_cents": listing_price(s),
         "printify_token_configured": bool(os.environ.get("PRINTIFY_API_TOKEN")),
         "niche_weight": s.get("niche_weight") if s.get("niche_weight") is not None else 0.7,
         "niche_theme_keys": sorted(NICHE_THEME_KEYS),
@@ -1151,6 +1170,11 @@ async def update_settings(payload: SettingsUpdate, _: None = Depends(require_adm
         update["printify_auto_push"] = bool(payload.printify_auto_push)
     if payload.etsy_lifestyle_photos is not None:
         update["etsy_lifestyle_photos"] = bool(payload.etsy_lifestyle_photos)
+    if payload.listing_price_cents is not None:
+        cents = int(payload.listing_price_cents)
+        if not MIN_PRICE_CENTS <= cents <= MAX_PRICE_CENTS:
+            raise HTTPException(status_code=400, detail="Price must be between $15 and $150")
+        update["listing_price_cents"] = cents
     if update:
         await settings_coll.update_one({"id": "config"}, {"$set": update}, upsert=True)
     if flush_queue:
@@ -1173,9 +1197,10 @@ async def start_catalog_fix(payload: Optional[CatalogFixRequest] = None, _: None
         raise HTTPException(status_code=409, detail="Catalog fix is already running")
     limit = payload.limit if payload and payload.limit and payload.limit > 0 else None
     mode = (payload.mode if payload else "fix") or "fix"
-    if mode not in ("fix", "sync", "retry"):
-        raise HTTPException(status_code=400, detail="mode must be fix, sync or retry")
-    _catalog_fix_task = asyncio.create_task(catalog_fix.run_catalog_fix(settings_coll, capsules_coll, limit, mode))
+    if mode not in catalog_fix.MODES:
+        raise HTTPException(status_code=400, detail=f"mode must be one of: {', '.join(catalog_fix.MODES)}")
+    _catalog_fix_task = asyncio.create_task(catalog_fix.run_catalog_fix(
+        settings_coll, capsules_coll, limit, mode, price_cents=listing_price(await get_settings())))
     return {"ok": True, "state": "running", "limit": limit, "mode": mode}
 
 
@@ -1225,6 +1250,7 @@ async def manual_push(capsule_id: str, _: None = Depends(require_admin_key)):
             shop_id=int(settings["printify_shop_id"]),
             print_provider_id=int(settings["printify_print_provider_id"]),
             capsule=full,
+            price_cents=listing_price(settings),
         )
         pid = str(product.get("id") or "")
         await capsules_coll.update_one(
