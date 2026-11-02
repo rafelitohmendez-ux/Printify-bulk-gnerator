@@ -130,13 +130,17 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
     }
   };
 
-  const runFix = async (limit) => {
-    if (!limit && !window.confirm("Rewrite titles, tags, descriptions and photo order on ALL live listings?")) return;
+  const runFix = async (limit, mode = "fix") => {
+    if (mode === "fix" && !limit && !window.confirm("Rewrite titles, tags, descriptions and photo order on ALL live listings?")) return;
     setStartingFix(true);
     try {
-      await startCatalogFix(limit);
+      await startCatalogFix(limit, mode);
       setFix({ state: "running", done: 0, failed: 0, total: 0, log: [] });
-      toast.success(limit ? "Testing on the newest listing..." : "Catalog fix started");
+      toast.success(
+        mode === "retry" ? "Retrying failed listings..."
+          : mode === "sync" ? "Re-sending text to Etsy..."
+          : limit ? "Testing on the newest live listing..." : "Catalog fix started"
+      );
     } catch (e) {
       toast.error("Could not start", { description: e?.response?.data?.detail || e.message });
     } finally {
@@ -476,6 +480,25 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
                   className="bg-zinc-100 text-black font-heading uppercase tracking-[0.2em] text-xs px-4 py-2 hover:bg-white disabled:opacity-40"
                 >
                   Fix all listings
+                </button>
+                {fix?.state !== "running" && (fix?.failed_ids || []).length > 0 && (
+                  <button
+                    data-testid="catalog-fix-retry"
+                    onClick={() => runFix(null, "retry")}
+                    disabled={startingFix}
+                    className="border border-red-800 text-red-300 font-heading uppercase tracking-[0.2em] text-xs px-4 py-2 hover:bg-zinc-900 disabled:opacity-40"
+                  >
+                    Retry failed ({fix.failed_ids.length})
+                  </button>
+                )}
+                <button
+                  data-testid="catalog-fix-sync"
+                  onClick={() => runFix(null, "sync")}
+                  disabled={startingFix || fix?.state === "running"}
+                  className="text-zinc-400 hover:text-white font-heading uppercase tracking-[0.2em] text-xs px-4 py-2 disabled:opacity-40"
+                  title="Re-send every live listing's current text to Etsy (no rewriting)"
+                >
+                  Re-sync text to Etsy
                 </button>
               </div>
               {fix && fix.state && fix.state !== "idle" && (

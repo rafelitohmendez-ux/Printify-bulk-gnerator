@@ -154,5 +154,75 @@ def test_endpoints(db, fakes, monkeypatch):
         return started, await server.catalog_fix_status(None)
 
     started, status = asyncio.run(go())
-    assert started == {"ok": True, "state": "running", "limit": 1}
+    assert started == {"ok": True, "state": "running", "limit": 1, "mode": "fix"}
     assert status["state"] == "done" and status["total"] == 1
+
+
+# ---------- Printify rate limit, sync and retry modes ----------
+from printify_client import PrintifyError  # noqa: E402
+
+
+def rate_limited_publish(fail_times):
+    """publish_product_text that returns 429 for the first `fail_times[pid]` calls per product."""
+    seen = {}
+
+    async def publish(shop_id, pid):
+        seen[pid] = seen.get(pid, 0) + 1
+        if seen[pid] <= fail_times.get(pid, 0):
+            raise PrintifyError("Printify POST publish.json -> 429: Too Many Attempts.", status=429)
+    publish.seen = seen
+    return publish
+
+
+def test_429_is_waited_out_and_retried(db, fakes, monkeypatch):
+    pub = rate_limited_publish({"p1": 2})
+    monkeypatch.setattr(catalog_fix, "publish_product_text", pub)
+    status = asyncio.run(catalog_fix.run_catalog_fix(db.settings, db.capsules))
+    assert status["failed"] == 0 and pub.seen["p1"] == 3
+    assert sum("rate limit: waiting" in line for line in status["log"]) == 2
+
+
+def test_persistent_429_recorded_as_publish_failure_then_retry_only_publishes(db, fakes, monkeypatch):
+    pub = rate_limited_publish({"p1": 99})
+    monkeypatch.setattr(catalog_fix, "publish_product_text", pub)
+    status = asyncio.run(catalog_fix.run_catalog_fix(db.settings, db.capsules))
+    assert status["failed"] == 1 and status["failed_ids"] == [{"id": "p1", "stage": "publish"}]
+    assert pub.seen["p1"] == catalog_fix.PUBLISH_ATTEMPTS
+    assert "text saved in Printify" in [l for l in status["log"] if l.startswith("FAILED")][0]
+
+    # Retry: Printify is fine now; only the publish is redone (no Gemini, no photos)
+    fakes["seo"].clear(); fakes["arrange"].clear()
+    pub2 = rate_limited_publish({})
+    monkeypatch.setattr(catalog_fix, "publish_product_text", pub2)
+    status = asyncio.run(catalog_fix.run_catalog_fix(db.settings, db.capsules, mode="retry"))
+    assert status["total"] == 1 and status["done"] == 1 and status["failed_ids"] == []
+    assert pub2.seen == {"p1": 1} and fakes["seo"] == [] and fakes["arrange"] == []
+
+
+def test_retry_redoes_full_fix_for_non_publish_failures(db, fakes, monkeypatch):
+    asyncio.run(db.settings.update_one({"id": catalog_fix.STATUS_DOC_ID},
+                                       {"$set": {"failed_ids": [{"id": "p3", "stage": "fix"}]}}, upsert=True))
+    status = asyncio.run(catalog_fix.run_catalog_fix(db.settings, db.capsules, mode="retry"))
+    assert status["total"] == 1 and [pid for pid, _ in fakes["update"]] == ["p3"] and len(fakes["seo"]) == 1
+
+
+def test_sync_mode_only_publishes_live_products(db, fakes):
+    status = asyncio.run(catalog_fix.run_catalog_fix(db.settings, db.capsules, mode="sync"))
+    assert status["total"] == 2 and fakes["publish"] == ["p1", "p2"]
+    assert fakes["update"] == [] and fakes["seo"] == [] and fakes["arrange"] == []
+
+
+def test_publishes_are_spaced_out(db, fakes, monkeypatch):
+    t = [1000.0]
+    waits = []
+
+    async def fake_sleep(sec):
+        waits.append(sec)
+        t[0] += sec
+
+    monkeypatch.setattr(catalog_fix, "_sleep", fake_sleep)
+    monkeypatch.setattr(catalog_fix, "_clock", lambda: t[0])
+    catalog_fix._last_publish[0] = 0.0
+    asyncio.run(catalog_fix.run_catalog_fix(db.settings, db.capsules, mode="sync"))
+    # second publish waits so the two are PUBLISH_INTERVAL_SECONDS apart (minus the 1s product delay)
+    assert catalog_fix.PUBLISH_INTERVAL_SECONDS - catalog_fix.DELAY_SECONDS in waits

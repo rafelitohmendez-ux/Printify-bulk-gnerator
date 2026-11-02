@@ -54,6 +54,7 @@ from title_words import RECENT_TITLES_WINDOW, find_overused_words, overused_word
 from title_words import words as title_word_list
 import etsy_photos
 import catalog_fix
+from print_image import clean_print_image
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -315,7 +316,8 @@ class SettingsUpdate(BaseModel):
 
 
 class CatalogFixRequest(BaseModel):
-    limit: Optional[int] = None  # None = every product; 1 = test on the newest product
+    limit: Optional[int] = None  # None = every product; 1 = test on the newest live product
+    mode: str = "fix"  # fix | sync (re-send text to Etsy only) | retry (previous run's failures)
 
 
 class ApprovePayload(BaseModel):
@@ -517,7 +519,15 @@ async def llm_generate_text(theme_prompt: str, banned_words: List[str], banned_n
     return data
 
 
-async def llm_generate_image(prompt: str) -> Optional[str]:
+IMAGE_ATTEMPTS = 2  # retries when Gemini returns the art as a poster on a white canvas
+
+NO_FRAME_RULE = (
+    "The ENTIRE canvas, edge to edge and corner to corner, is pure black #000000. "
+    "NO white or light background, NO margin, NO border, NO paper, NO poster or framed print, NO mat. "
+)
+
+
+async def _gemini_image_bytes(prompt: str) -> Optional[bytes]:
     STYLE_PREFIX = (
         "You are an expert graphic designer producing stark white-ink-on-black gothic industrial and cyber goth "
         "streetwear print graphics. Pure white on #000000 only, no color. "
@@ -526,7 +536,7 @@ async def llm_generate_image(prompt: str) -> Optional[str]:
         response = await asyncio.to_thread(
             genai_client.models.generate_content,
             model="gemini-2.5-flash-image",
-            contents=STYLE_PREFIX + prompt,
+            contents=STYLE_PREFIX + NO_FRAME_RULE + prompt,
             config=types.GenerateContentConfig(
                 response_modalities=["IMAGE"],
             ),
@@ -538,7 +548,28 @@ async def llm_generate_image(prompt: str) -> Optional[str]:
         return None
     for part in response.candidates[0].content.parts:
         if getattr(part, "inline_data", None) and part.inline_data.data:
-            return base64.b64encode(part.inline_data.data).decode("utf-8")
+            return part.inline_data.data
+    return None
+
+
+async def llm_generate_image(prompt: str) -> Optional[str]:
+    """Generate a print graphic. A light frame around the art (it would print as a white
+    rectangle on the black shirt) is cropped off; if that isn't possible, regenerate once.
+    Returns None rather than an unprintable image."""
+    for attempt in range(1, IMAGE_ATTEMPTS + 1):
+        raw = await _gemini_image_bytes(prompt)
+        if not raw:
+            return None
+        try:
+            cleaned, cropped, safe = clean_print_image(raw)
+        except Exception:
+            logger.exception("print image check failed; using image as generated")
+            return base64.b64encode(raw).decode("utf-8")
+        if cropped:
+            logger.info("Cropped a light frame off a generated print graphic (attempt %d)", attempt)
+        if safe:
+            return base64.b64encode(cleaned).decode("utf-8")
+        logger.warning("Generated print graphic has a light background (attempt %d/%d)", attempt, IMAGE_ATTEMPTS)
     return None
 
 
@@ -1141,8 +1172,11 @@ async def start_catalog_fix(payload: Optional[CatalogFixRequest] = None, _: None
     if _catalog_fix_task and not _catalog_fix_task.done():
         raise HTTPException(status_code=409, detail="Catalog fix is already running")
     limit = payload.limit if payload and payload.limit and payload.limit > 0 else None
-    _catalog_fix_task = asyncio.create_task(catalog_fix.run_catalog_fix(settings_coll, capsules_coll, limit))
-    return {"ok": True, "state": "running", "limit": limit}
+    mode = (payload.mode if payload else "fix") or "fix"
+    if mode not in ("fix", "sync", "retry"):
+        raise HTTPException(status_code=400, detail="mode must be fix, sync or retry")
+    _catalog_fix_task = asyncio.create_task(catalog_fix.run_catalog_fix(settings_coll, capsules_coll, limit, mode))
+    return {"ok": True, "state": "running", "limit": limit, "mode": mode}
 
 
 @api_router.get("/catalog/fix")
