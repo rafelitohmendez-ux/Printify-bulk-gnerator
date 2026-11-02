@@ -47,6 +47,16 @@ the frame, theme only hinted at the edges. No dark-on-dark scenes.
 Approve every design yourself. Etsy removes listings made by bots with no human involvement
 and may close the shop.
 
+## Price
+Settings → Etsy Listings → **Listing price (S–XL)**. Saving sets the price for new listings;
+**Apply price to all listings** reprices every Printify product and re-sends only the prices
+to Etsy. 2XL and up keep their extra Printify cost on top (rounded up to whole dollars), and
+no size is ever priced below Printify cost + $5. Etsy's own fees come out of that profit.
+
+## Checking photos
+**Check photos** puts the back-print mockup first on every live listing and lists any listing
+where it couldn't identify the mockup. Fix those by dragging the back print to the first slot.
+
 ## Fixing the existing catalog
 Easiest: dashboard → Settings → Etsy Listings → **Test on 1 listing**, check it on Etsy, then
 **Fix all listings**. It rewrites title, tags and description (with the disclosure) for every
