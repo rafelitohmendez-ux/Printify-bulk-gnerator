@@ -16,8 +16,10 @@ Modes:
   retry  - redo only the products that failed in the previous run
   price  - set every product's price (S-XL = the base price; bigger sizes keep their extra
            Printify cost on top) and re-send prices to Etsy
-  photos - re-run the photo arrangement on live listings and list the ones where the
-           back-print mockup could not be moved to the first slot
+  photos - re-run the photo arrangement on live listings. Where Etsy has no back-print
+           mockup at all (old listings left with only an AI scene photo), re-send Printify's
+           mockups with the back print first (this replaces the listing's photos). With
+           limit=1 the run stops after the first such restore, as a test.
 
 Printify rate-limits publishing to Etsy (about 200 per 30 minutes), so publishes are paced
 and a 429 is waited out and retried.
@@ -32,9 +34,13 @@ from typing import Any, Dict, List, Optional
 import etsy_photos
 from bulk_seo_update import generate_seo
 from printify_client import (
-    PrintifyError, list_products, publish_product_prices, publish_product_text, update_product,
+    PrintifyError, back_first_images, list_products, publish_product_fields, publish_product_prices,
+    publish_product_text, update_product,
 )
-from seo import build_description, extract_back_concept, extract_capsule_name, filter_etsy_tags, infer_category, MAX_TAGS
+from seo import (
+    MAX_TAGS, PHOTO_NOTE_MOCKUPS, PHOTO_NOTE_WITH_AI_SCENE, build_description, extract_back_concept,
+    extract_capsule_name, filter_etsy_tags, infer_category,
+)
 
 logger = logging.getLogger("midnightrotation.catalog_fix")
 
@@ -56,7 +62,8 @@ class PublishFailed(Exception):
     """Printify text saved, but re-syncing it to Etsy failed (retry only needs the publish)."""
 
 
-async def publish_paced(shop_id: int, pid: str, on_wait=None, prices: bool = False) -> None:
+async def publish_paced(shop_id: int, pid: str, on_wait=None, prices: bool = False,
+                        restore: Optional[Dict[str, bool]] = None) -> None:
     """Re-send text (or prices) to Etsy, spaced out and retried on Printify's 429 rate limit."""
     for attempt in range(1, PUBLISH_ATTEMPTS + 1):
         gap = PUBLISH_INTERVAL_SECONDS - (_clock() - _last_publish[0])
@@ -64,7 +71,10 @@ async def publish_paced(shop_id: int, pid: str, on_wait=None, prices: bool = Fal
             await _sleep(gap)
         _last_publish[0] = _clock()
         try:
-            await (publish_product_prices if prices else publish_product_text)(shop_id, pid)
+            if restore:
+                await publish_product_fields(shop_id, pid, images=True, text=restore.get("text", False))
+            else:
+                await (publish_product_prices if prices else publish_product_text)(shop_id, pid)
             return
         except PrintifyError as e:
             if e.status != 429 or attempt == PUBLISH_ATTEMPTS:
@@ -117,7 +127,7 @@ async def fix_one(
         if photo_id:
             has_ai_scene = True
         note = await etsy_photos.arrange_listing_photos(
-            auth, listing_id, etsy_photos.back_mockup_src(product), [photo_id] if photo_id else []
+            auth, listing_id, etsy_photos.back_mockup_src(product), [photo_id] if photo_id else [], product=product
         )
         parts.append(f"photos: {why}; {note}")
     elif listing_id:
@@ -211,20 +221,43 @@ def listing_url(listing_id: str) -> str:
     return f"https://www.etsy.com/listing/{listing_id}"
 
 
-async def check_photos_one(product: Dict[str, Any], auth) -> Dict[str, Any]:
-    """Re-run the photo arrangement for one live listing. Returns {"note", "attention"}."""
+async def restore_mockups(product: Dict[str, Any], shop_id: int, on_wait=None) -> str:
+    """Re-send Printify's mockups to Etsy with the back print as the main photo. This replaces the
+    listing's photos (dropping any old AI scene photo), so the description's AI-scene note goes too."""
+    pid = str(product.get("id"))
+    images = product.get("images") or []
+    if not any((i.get("position") or "").lower() == "back" for i in images):
+        raise RuntimeError("Printify product has no back mockup to restore")
+    update: Dict[str, Any] = {"images": back_first_images(images)}
+    description = product.get("description") or ""
+    text = PHOTO_NOTE_WITH_AI_SCENE in description
+    if text:
+        update["description"] = description.replace(PHOTO_NOTE_WITH_AI_SCENE, PHOTO_NOTE_MOCKUPS)
+    await update_product(shop_id, pid, update)
+    await publish_paced(shop_id, pid, on_wait, restore={"text": text})
+    return "mockups re-sent from Printify with the back print first (Etsy updates in a few minutes)"
+
+
+async def check_photos_one(product: Dict[str, Any], auth, shop_id: Optional[int] = None, on_wait=None) -> Dict[str, Any]:
+    """Re-run the photo arrangement for one live listing; restore missing mockups.
+    Returns {"note", "attention", "restored"}."""
     listing_id = str((product.get("external") or {}).get("id"))
     photo_id, why = await etsy_photos.generated_first_image_id(auth, listing_id, product)
     note = await etsy_photos.arrange_listing_photos(
-        auth, listing_id, etsy_photos.back_mockup_src(product), [photo_id] if photo_id else []
+        auth, listing_id, etsy_photos.back_mockup_src(product), [photo_id] if photo_id else [], product=product
     )
     attention = None
-    if "back mockup not moved" in note or "failed" in note:
+    restored = False
+    if "back mockup not moved" in note and shop_id is not None:
+        # No back view among the Etsy photos (often only the old AI scene is left): restore
+        note = f"{note} -> {await restore_mockups(product, shop_id, on_wait)}"
+        restored = True
+    elif "back mockup not moved" in note or "failed" in note:
         attention = {
             "id": str(product.get("id")), "title": (product.get("title") or "")[:90],
             "url": listing_url(listing_id), "reason": note[:200],
         }
-    return {"note": f"photos: {why}; {note}", "attention": attention}
+    return {"note": f"photos: {why}; {note}", "attention": attention, "restored": restored}
 
 
 async def run_catalog_fix(
@@ -279,7 +312,7 @@ async def run_catalog_fix(
             stages = {f["id"]: f.get("stage", "fix") for f in previous.get("failed_ids") or []}
             products = [p for p in products if str(p.get("id")) in stages]
             price_cents = previous.get("price_cents") or price_cents
-        if limit:
+        if limit and mode != "photos":
             # A test run should exercise a live listing: prefer products already on Etsy
             live = [p for p in products if (p.get("external") or {}).get("id")]
             products = (live or products)[:limit]
@@ -300,10 +333,12 @@ async def run_catalog_fix(
                 elif mode == "price" or stage == "price":
                     summary = await reprice_one(product, shop_id, int(price_cents), on_wait)
                 elif (mode == "photos" or stage == "photos") and auth:
-                    result = await check_photos_one(product, auth)
+                    result = await check_photos_one(product, auth, shop_id, on_wait)
                     summary = result["note"]
                     if result["attention"]:
                         status["needs_attention"].append(result["attention"])
+                    if result["restored"]:
+                        status["restored"] = status.get("restored", 0) + 1
                 else:
                     summary = await fix_one(product, shop_id, auth, capsules_coll, photo_listing_ids, on_wait)
                 status["done"] += 1
@@ -325,6 +360,9 @@ async def run_catalog_fix(
                 status["failed_ids"].append({"id": pid, "stage": stages.get(pid) or (mode if mode in ("price", "photos") else "fix")})
                 status["log"].append(f"FAILED {label}: {type(e).__name__}: {str(e)[:300]}")
             await save()
+            if mode == "photos" and limit and status.get("restored", 0) >= limit:
+                status["log"].append("Test finished: stopped after the first restored listing.")
+                break
             await _sleep(DELAY_SECONDS)
         status["state"] = "done"
     except Exception as e:

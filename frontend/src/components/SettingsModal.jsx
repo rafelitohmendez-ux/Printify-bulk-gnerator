@@ -160,7 +160,7 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
         mode === "retry" ? "Retrying failed listings..."
           : mode === "sync" ? "Re-sending text to Etsy..."
           : mode === "price" ? "Updating prices..."
-          : mode === "photos" ? "Checking photos..."
+          : mode === "photos" ? (limit ? "Testing photo fix on one listing..." : "Checking photos...")
           : limit ? "Testing on the newest live listing..." : "Catalog fix started"
       );
     } catch (e) {
@@ -513,6 +513,14 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
 
               <div className="flex flex-wrap items-center gap-2 mb-5">
                 <button
+                  data-testid="check-photos-test"
+                  onClick={() => runFix(1, "photos")}
+                  disabled={startingFix || fix?.state === "running"}
+                  className="border border-zinc-600 text-zinc-100 font-heading uppercase tracking-[0.2em] text-xs px-4 py-2 hover:bg-zinc-900 disabled:opacity-40"
+                >
+                  Test photo fix on 1
+                </button>
+                <button
                   data-testid="check-photos"
                   onClick={() => runFix(null, "photos")}
                   disabled={startingFix || fix?.state === "running"}
@@ -521,7 +529,8 @@ const SettingsModal = ({ open, onClose, onSaved }) => {
                   Check photos
                 </button>
                 <span className="text-[10px] text-zinc-500">
-                  // Puts the back print first on every live listing and lists any it couldn't fix.
+                  // Puts the back print first on every live listing. Listings with no back mockup on
+                  Etsy get Printify's mockups re-sent (replaces their photos, drops old AI scenes).
                 </span>
               </div>
 

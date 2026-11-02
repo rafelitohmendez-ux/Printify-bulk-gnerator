@@ -185,17 +185,19 @@ async def publish_product(shop_id: int, product_id: str) -> None:
         )
 
 
-async def publish_product_fields(shop_id: int, product_id: str, text: bool = False, variants: bool = False) -> None:
+async def publish_product_fields(
+    shop_id: int, product_id: str, text: bool = False, variants: bool = False, images: bool = False
+) -> None:
     """Re-sync selected fields of an already-published product to Etsy.
 
-    text = title, description and tags; variants = prices. Images are never re-sent, so
-    photos arranged on Etsy (size chart, back mockup first) are not overwritten.
+    text = title, description and tags; variants = prices; images = Printify's selected mockups
+    (this REPLACES the listing's photos on Etsy, so it's only used to restore missing mockups).
     """
     async with _client() as c:
         await _check(
             await c.post(
                 f"/shops/{shop_id}/products/{product_id}/publish.json",
-                json={"title": text, "description": text, "images": False,
+                json={"title": text, "description": text, "images": images,
                       "variants": variants, "tags": text, "keyFeatures": False,
                       "shipping_template": False}
             )
@@ -249,6 +251,25 @@ async def prioritize_front_mockup(shop_id: int, product_id: str) -> Optional[str
         })
     await update_product(shop_id, product_id, {"images": updated})
     return chosen_src
+
+
+def back_first_images(images: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Image list with the best back mockup as default (first on Etsy) and selected for publishing,
+    plus the front close-up selected. Other selections are kept."""
+    back = _pick_back_mockup(images)
+    front = _pick_front_mockup(images)
+    keep = {(img or {}).get("src") for img in (back, front) if img}
+    out = []
+    for img in images:
+        src = img.get("src")
+        out.append({
+            "src": src,
+            "variant_ids": img.get("variant_ids", []),
+            "position": img.get("position"),
+            "is_default": bool(back) and src == back.get("src"),
+            "is_selected_for_publishing": src in keep or bool(img.get("is_selected_for_publishing")),
+        })
+    return out
 
 
 def _pick_back_mockup(images: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

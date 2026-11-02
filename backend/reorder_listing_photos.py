@@ -102,7 +102,7 @@ async def main(args) -> int:
             if not args.apply:
                 print("    would put back mockup at rank 1" + (" and that photo at rank 4" if photo_id else ""))
                 continue
-            result = await arrange_listing_photos(auth, lid, back_mockup_src(product), [photo_id] if photo_id else [])
+            result = await arrange_listing_photos(auth, lid, back_mockup_src(product), [photo_id] if photo_id else [], product=product)
             print(f"    {result}")
             changed += 1
         except EtsyAPIError as e:
